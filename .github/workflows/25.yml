@@ -22,7 +22,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
 
-      # ۲. کش کردن دایرکتوری ابزارها و کدهای کامپایل‌شده C مربوط به Nuitka (clcache)
+      # ۲. کش کردن دایرکتوری ابزارها و کدهای کامپایل‌شده C مربوط به Nuitka
       - name: Cache Nuitka Compiler and downloads
         uses: actions/cache@v4
         with:
@@ -32,24 +32,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuitka-
 
-      # ۳. نصب سریع پکیج‌ها با استفاده از موتور قدرتمند uv
+      # ۳. نصب پکیج‌ها (حذف آرگومان نادرست --venv و فعال‌سازی خودکار .venv)
       - name: Install Dependencies
         run: |
           echo "=== Creating virtual environment with uv ==="
-          uv venv venv
+          uv venv # دایرکتوری استاندارد .venv را ایجاد می‌کند
           
           echo "=== Installing packages ==="
-          # استفاده از uv برای نصب آنی کتابخانه‌ها درون محیط مجازی
-          uv pip install pynput pystray Pillow Nuitka --venv venv
+          # uv به صورت خودکار محیط .venv را شناسایی و پکیج‌ها را در آن نصب می‌کند
+          uv pip install pynput pystray Pillow Nuitka
           if (Test-Path requirements.txt) { 
-             uv pip install -r requirements.txt --venv venv
+             uv pip install -r requirements.txt
           }
 
-      # ۴. کامپایل فشرده پروژه با Nuitka (در دفعات دوم به بعد با سرعت باورنکردنی انجام می‌شود)
+      # ۴. کامپایل فشرده پروژه با Nuitka از درون پوشه .venv ساخته شده
       - name: Build with Nuitka
         run: |
           echo "=== Starting Nuitka Compilation ==="
-          .\venv\Scripts\python -m nuitka --standalone `
+          .\.venv\Scripts\python -m nuitka --standalone `
                            --onefile `
                            --windows-console-mode=disable `
                            --enable-plugins=tk-inter `
