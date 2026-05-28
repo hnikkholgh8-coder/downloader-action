@@ -1,7 +1,11 @@
 name: Manual Build and Release
 
 on:
-  workflow_dispatch: # ایجاد دکمه اجرای دستی در پنل Actions
+  workflow_dispatch:
+
+# ایجاد دسترسی نوشتن برای توکن گیت‌هاب (رفع خطای ۴۰۳)
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -11,27 +15,56 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      # ==========================================
+      # راه‌اندازی نسخه پایدار پایتون ۳.۱۲
+      # ==========================================
+      - name: [Log] Initialize Setup
+        run: Write-Host "--- [INFO] Setting up Python 3.12 (Stable) ---"
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12' # نسخه پایدار و کامپایل بدون مشکل با Nuitka
+          python-version: '3.12'
           check-latest: true
 
-      - name: Install Dependencies
-        run: |
-          python -m venv venv
-          .\venv\Scripts\python -m pip install --upgrade pip
-          .\venv\Scripts\pip install pynput pystray Pillow Nuitka
-          if (Test-Path requirements.txt) { .\venv\Scripts\pip install -r requirements.txt }
+      # ==========================================
+      # نصب وابستگی‌ها و بیلد با Nuitka
+      # ==========================================
+      - name: [Log] Build Preparation
+        run: Write-Host "--- [INFO] Creating Environment & Compiling with Nuitka ---"
 
-      - name: Build with Nuitka
+      - name: Install and Build
         run: |
+          Write-Host "[LOG] Creating Python Virtual Environment..."
+          python -m venv venv
+          
+          Write-Host "[LOG] Upgrading pip to the latest version..."
+          .\venv\Scripts\python -m pip install --upgrade pip
+          
+          Write-Host "[LOG] Installing core packages (pynput, pystray, Pillow, Nuitka)..."
+          .\venv\Scripts\pip install pynput pystray Pillow Nuitka
+          
+          if (Test-Path requirements.txt) { 
+              Write-Host "[LOG] Found requirements.txt, installing extra dependencies..."
+              .\venv\Scripts\pip install -r requirements.txt 
+          }
+          
+          Write-Host "[LOG] Executing Nuitka compilation. Please wait..."
+          # اصلاح فلگ کنسول طبق پیشنهاد لاگ کامپایلر شما
           .\venv\Scripts\python -m nuitka --standalone `
                            --onefile `
-                           --windows-disable-console `
+                           --windows-console-mode=disable `
                            --enable-plugins=tk-inter `
                            --assume-yes-for-downloads `
                            app.py
+                           
+          Write-Host "[SUCCESS] app.exe compiled successfully!"
+
+      # ==========================================
+      # بارگذاری فایل اجرایی در بخش Release گیت‌هاب (بدون خطای ۴۰۳)
+      # ==========================================
+      - name: [Log] Upload Artifacts
+        run: Write-Host "--- [INFO] Creating GitHub Release and uploading 'app.exe' ---"
 
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
@@ -39,7 +72,7 @@ jobs:
           artifacts: "app.exe"
           tag: "latest"
           name: "Latest Automated Build"
-          body: "این نسخه به صورت خودکار توسط GitHub Actions ساخته شده است."
+          body: "این نسخه پایدار به صورت خودکار توسط GitHub Actions بیلد شده است."
           allowUpdates: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
