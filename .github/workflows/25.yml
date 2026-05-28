@@ -1,25 +1,19 @@
 name: Manual Build and Release
 
 on:
-  workflow_dispatch:
-
-# مجوز دسترسی به اکشن جهت نوشتن و آپلود فایل در مخزن و ریلیس (حل خطای ۴۰۳)
-permissions:
-  contents: write
+  workflow_dispatch: # امکان اجرای دستی از تب Actions
 
 jobs:
   build:
     runs-on: windows-latest
     
+    # اضافه کردن دسترسی لازم برای آپلود فایل و ایجاد ریلیز در مخزن شما
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      # ==========================================
-      # راه‌اندازی پایتون ۳.۱۲ (سازگار با Nuitka)
-      # ==========================================
-      - name: [Log] Setup Python
-        run: Write-Host "--- [INFO] Setting up Python 3.12 (Stable & Compatible) ---"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -27,43 +21,38 @@ jobs:
           python-version: '3.12'
           check-latest: true
 
-      # ==========================================
-      # نصب وابستگی‌ها و کامپایل با Nuitka
-      # ==========================================
-      - name: [Log] Build Preparation
-        run: Write-Host "--- [INFO] Creating Environment & Compiling with Nuitka ---"
-
-      - name: Install and Build
+      - name: Install Dependencies
         run: |
-          Write-Host "[LOG] Creating Python Virtual Environment..."
+          echo "=== [1/3] Start setting up Python virtual environment ==="
           python -m venv venv
           
-          Write-Host "[LOG] Upgrading pip to the latest version..."
+          echo "=== [2/3] Upgrading pip ==="
           .\venv\Scripts\python -m pip install --upgrade pip
           
-          Write-Host "[LOG] Installing core packages (pynput, pystray, Pillow, Nuitka)..."
+          echo "=== [3/3] Installing Nuitka and libraries ==="
           .\venv\Scripts\pip install pynput pystray Pillow Nuitka
-          
           if (Test-Path requirements.txt) { 
-              Write-Host "[LOG] Found requirements.txt, installing extra dependencies..."
-              .\venv\Scripts\pip install -r requirements.txt 
+             echo "Installing requirements.txt..."
+             .\venv\Scripts\pip install -r requirements.txt 
           }
-          
-          Write-Host "[LOG] Executing Nuitka compilation. Please wait..."
+          echo "Dependencies installation completed successfully."
+
+      - name: Build with Nuitka
+        run: |
+          echo "=== Starting Nuitka Compilation (This may take a few minutes) ==="
+          # استفاده از فلگ اصلاح شده برای حذف هشدارهای کنسول Nuitka
           .\venv\Scripts\python -m nuitka --standalone `
                            --onefile `
-                           --windows-disable-console `
+                           --windows-console-mode=disable `
                            --enable-plugins=tk-inter `
                            --assume-yes-for-downloads `
                            app.py
-                           
-          Write-Host "[SUCCESS] app.exe compiled successfully!"
-
-      # ==========================================
-      # روش اول: بارگذاری فایل در بخش ریلیس گیت‌هاب (با مجوز Write)
-      # ==========================================
-      - name: [Log] Creating Release
-        run: Write-Host "--- [INFO] Creating GitHub Release and uploading 'app.exe' ---"
+          echo "Compilation finished. Checking output file..."
+          if (Test-Path app.exe) {
+             echo "Success! app.exe has been generated."
+          } else {
+             echo "Warning: app.exe was not found in the root folder."
+          }
 
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
@@ -71,19 +60,7 @@ jobs:
           artifacts: "app.exe"
           tag: "latest"
           name: "Latest Automated Build"
-          body: "نسخه پایدار نهایی کامپایل‌شده توسط سرور گیت‌هاب اکشن."
+          body: "این نسخه به صورت خودکار با پایتون ۳.۱۲ و Nuitka کامپایل شده است."
           allowUpdates: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
-
-      # ==========================================
-      # روش دوم: آپلود فایل به عنوان Artifact (جهت دانلود مستقیم از صفحه اکشن)
-      # ==========================================
-      - name: [Log] Upload Artifact
-        run: Write-Host "--- [INFO] Uploading executable as build artifact ---"
-
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: compiled-app
-          path: app.exe
