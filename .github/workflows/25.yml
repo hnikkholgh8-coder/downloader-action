@@ -1,7 +1,7 @@
 name: Manual Build and Release
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # ایجاد دکمه اجرای دستی در پنل Actions
 
 jobs:
   build:
@@ -11,75 +11,27 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ==========================================
-      # شاخه اول: تلاش برای ساخت با پایتون ۳.۱۴
-      # ==========================================
-      - name: [Log] Setting up Python 3.14
-        run: Write-Host "--- [INFO] Attempting to set up Python 3.14 (Pre-release) ---"
-
-      - name: Set up Python 3.14
-        id: setup_314
-        uses: actions/setup-python@v5
-        continue-on-error: true
-        with:
-          python-version: '3.14-dev'
-          check-latest: true
-
-      - name: [Log] Building with Python 3.14
-        if: steps.setup_314.outcome == 'success'
-        run: Write-Host "--- [INFO] Python 3.14 Ready. Installing packages and building with Nuitka... ---"
-
-      - name: Build with Python 3.14
-        id: build_314
-        if: steps.setup_314.outcome == 'success'
-        continue-on-error: true
-        run: |
-          Write-Host "[LOG] Creating Virtual Environment for 3.14..."
-          python -m venv venv
-          Write-Host "[LOG] Upgrading pip..."
-          .\venv\Scripts\python -m pip install --upgrade pip
-          Write-Host "[LOG] Installing dependencies..."
-          .\venv\Scripts\pip install pynput pystray Pillow Nuitka
-          if (Test-Path requirements.txt) { .\venv\Scripts\pip install -r requirements.txt }
-          Write-Host "[LOG] Starting Nuitka compilation with Python 3.14..."
-          .\venv\Scripts\python -m nuitka --standalone --onefile --windows-disable-console --enable-plugins=tk-inter --assume-yes-for-downloads app.py
-          Write-Host "[SUCCESS] Compilation completed using Python 3.14!"
-
-      # ==========================================
-      # شاخه دوم (پشتیبان): بازگشت به پایتون ۳.۱۲ در صورت شکست شاخه اول
-      # ==========================================
-      - name: [Log] Fallback Warning
-        if: steps.setup_314.outcome == 'failure' || steps.build_314.outcome == 'failure'
-        run: Write-Host "--- [WARNING] Python 3.14 build failed. Switched to stable Python 3.12 fallback... ---"
-
-      - name: Set up Python 3.12 (Fallback)
-        id: setup_312
-        if: steps.setup_314.outcome == 'failure' || steps.build_314.outcome == 'failure'
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: '3.12' # نسخه پایدار و کامپایل بدون مشکل با Nuitka
           check-latest: true
 
-      - name: Build with Python 3.12 (Fallback)
-        if: steps.setup_314.outcome == 'failure' || steps.build_314.outcome == 'failure'
+      - name: Install Dependencies
         run: |
-          Write-Host "[LOG] Re-creating Virtual Environment for 3.12..."
-          if (Test-Path venv) { Remove-Item -Recurse -Force venv }
           python -m venv venv
-          Write-Host "[LOG] Upgrading pip..."
           .\venv\Scripts\python -m pip install --upgrade pip
-          Write-Host "[LOG] Installing dependencies..."
           .\venv\Scripts\pip install pynput pystray Pillow Nuitka
           if (Test-Path requirements.txt) { .\venv\Scripts\pip install -r requirements.txt }
-          Write-Host "[LOG] Starting Nuitka compilation with Python 3.12..."
-          .\venv\Scripts\python -m nuitka --standalone --onefile --windows-disable-console --enable-plugins=tk-inter --assume-yes-for-downloads app.py
-          Write-Host "[SUCCESS] Compilation completed using Python 3.12!"
 
-      # ==========================================
-      # مرحله نهایی: انتشار فایل خروجی در ریلیس
-      # ==========================================
-      - name: [Log] Creating Release
-        run: Write-Host "--- [INFO] Creating GitHub Release and uploading the executable... ---"
+      - name: Build with Nuitka
+        run: |
+          .\venv\Scripts\python -m nuitka --standalone `
+                           --onefile `
+                           --windows-disable-console `
+                           --enable-plugins=tk-inter `
+                           --assume-yes-for-downloads `
+                           app.py
 
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
