@@ -1,8 +1,27 @@
 import os
+import sys
+
+# =====================================================================
+# حل پویای مشکل بارگذاری پلاگین‌های گرافیکی Qt در نسخه‌های کامپایل شده
+# =====================================================================
+if getattr(sys, 'frozen', False) or 'nuitka' in sys.modules:
+    base_dir = os.path.dirname(sys.executable)
+    # حدس زدن مسیرهای احتمالی قرارگیری فولدر پلاگین‌ها
+    paths_to_check = [
+        os.path.join(base_dir, "PyQt6", "Qt6", "plugins"),
+        os.path.join(base_dir, "Qt6", "plugins"),
+        os.path.join(base_dir, "plugins"),
+        base_dir
+    ]
+    for path in paths_to_check:
+        platforms_path = os.path.join(path, "platforms")
+        if os.path.exists(platforms_path):
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = path
+            break
+
 import json
 import time
 import threading
-import sys
 from dataclasses import dataclass
 from typing import Optional, List
 
@@ -95,7 +114,7 @@ class AppConfig:
     ollama_host: str = "192.168.20.65"
     ollama_port: str = "11434"
     hotkey_str: str = "<ctrl>+<alt>+x"
-    default_model: str = "translategemma:4b"
+    default_model: str = "gemma3:1b"  # تغییر مدل پیش‌فرض به gemma3:1b طبق درخواست شما
     modes: Optional[dict] = None
 
     def __post_init__(self):
@@ -380,7 +399,7 @@ class FloatingWindow(QWidget):
 
         content_layout.addWidget(tab_widget)
 
-        # ۵. باکس نمایش خروجی با دایرکشن راست‌چین کاملاً طبیعی و نیتیو
+        # ۵. باکس نمایش خروجی با دایرکشن راست‌چین کاملاً طبیعی و نیتیو ویندوز
         self.text_area = QTextEdit()
         self.text_area.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         content_layout.addWidget(self.text_area)
@@ -722,54 +741,3 @@ class ModernAssistantApp(QObject):
         exit_action = QAction("خروج", self)
         exit_action.triggered.connect(self.cleanup_and_exit)
         tray_menu.addAction(exit_action)
-
-        self.tray_icon.setContextMenu(tray_menu)
-        self.tray_icon.show()
-
-    def show_settings_window(self):
-        self.settings_win = SettingsWindow(self.config, self.start_hotkey_listener)
-        self.settings_win.show()
-
-    def cleanup_and_exit(self):
-        if self.listener:
-            self.listener.stop()
-        if self.tray_icon:
-            self.tray_icon.hide()
-        self.q_app.quit()
-
-# =====================================================================
-# تنظیم استارت‌آپ خودکار ویندوز
-# =====================================================================
-def register_in_startup() -> bool:
-    if sys.platform != "win32":
-        return False
-    try:
-        exe_path = os.path.abspath(sys.argv[0])
-        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, "AI-Text-Assistant", 0, winreg.REG_SZ, f'"{exe_path}"')
-        winreg.CloseKey(key)
-        return True
-    except Exception as e:
-        print(f"خطا در ثبت استارت‌آپ: {e}")
-        return False
-
-# =====================================================================
-# شروع اجرای نرم‌افزار
-# =====================================================================
-if __name__ == "__main__":
-    if len(sys.argv) > 1 and sys.argv[1] == "--startup":
-        success = register_in_startup()
-        if success:
-            print("برنامه با موفقیت به استارت‌آپ ویندوز اضافه شد.")
-        else:
-            print("عملیات ناموفق بود.")
-        sys.exit(0)
-
-    # شروع موتور اصلی برنامه Qt
-    qt_app = QApplication(sys.argv)
-    qt_app.setQuitOnLastWindowClosed(False)
-    
-    app = ModernAssistantApp(qt_app)
-    
-    sys.exit(qt_app.exec())
