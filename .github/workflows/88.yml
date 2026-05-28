@@ -12,7 +12,7 @@ on:
         required: true
         default: "pynput pystray Pillow Nuitka"
       nuitka_flags:
-        description: "فلگ‌های کامپایل Nuitka (پیشنهاد می‌شود خروجی --output-filename=app تغییر نکند)"
+        description: "فلگ‌های کامپایل Nuitka"
         required: true
         default: "--standalone --onefile --windows-console-mode=disable --enable-plugins=tk-inter --assume-yes-for-downloads --output-filename=app"
 
@@ -64,23 +64,22 @@ jobs:
           echo "Target File: ${{ github.event.inputs.entrypoint }}"
           echo "Nuitka Flags: ${{ github.event.inputs.nuitka_flags }}"
           
-          # اجرای کامپایلر با اعمال داینامیک تمام پارامترهای ارسالی شما
           .\.venv\Scripts\python -m nuitka ${{ github.event.inputs.nuitka_flags }} "${{ github.event.inputs.entrypoint }}"
           echo "Compilation finished."
 
-      # ۵. آرتیفکت گیت‌هاب (کمربند ایمنی در صورت قطعی شبکه)
+      # ۵. آرتیفکت گیت‌هاب با الگوی پویا (پشتیبانی از هر نام فایلی که برای exe انتخاب کنید)
       - name: Save Build as Artifact (Safety Net)
         uses: actions/upload-artifact@v4
         with:
           name: compiled-app-build-${{ github.run_number }}
-          path: app.exe
+          path: "*.exe" # تغییر به الگو پویا جهت شناسایی هر نوع نام فایل خروجی
           retention-days: 90
 
       # ۶. ایجاد ریلیز نهایی در گیت‌هاب
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
         with:
-          artifacts: "app.exe"
+          artifacts: "*.exe" # شناسایی و آپلود خودکار هر نام اگزه‌ای که تولید شده باشد
           tag: "build-${{ github.run_number }}"
           name: "Build #${{ github.run_number }}"
           body: |
