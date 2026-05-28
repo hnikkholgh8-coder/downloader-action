@@ -1,4 +1,4 @@
-name: Manual Build and Release
+name: Manual Build and Release v4
 
 on:
   workflow_dispatch:
