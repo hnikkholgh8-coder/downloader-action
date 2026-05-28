@@ -11,9 +11,10 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional, List
 
-# در صورت اجرا روی ویندوز، کتابخانه رجیستری وارد می‌شود
+# در صورت اجرا روی ویندوز، کتابخانه‌های سیستم‌عامل وارد می‌شوند
 if sys.platform == "win32":
     import winreg
+    import ctypes
 
 # =====================================================================
 # فایل تنظیمات و پرامپت‌های پیش‌فرض سیستم
@@ -141,19 +142,35 @@ def is_text_mostly_persian(text: str) -> bool:
     return (persian_chars / total_chars) > 0.25
 
 def apply_unicode_rtl(text: str) -> str:
-    """اعمال کاراکترهای کنترل جهت یونیکد (RLE و PDF) جهت رفع به‌هم‌ریختگی کلمات انگلیسی در متون فارسی"""
-    if not text:
-        return ""
-    lines = text.split('\n')
-    processed_lines = []
-    for line in lines:
-        if line.strip():
-            # احاطه کردن خط با کاراکترهای جهت‌دهی راست‌به‌چپ برای اصلاح چینش عبارات ترکیبی
-            new_line = f"\u202b{line}\u202c"
-            processed_lines.append(new_line)
-        else:
-            processed_lines.append(line)
-    return '\n'.join(processed_lines)
+    """برگرداندن متن اصلی؛ با وجود هندلر نیتیو ویندوز نیازی به تزریق کاراکترهای مخفی نیست"""
+    return text if text else ""
+
+def force_rtl_reading_order(widget):
+    """اعمال استایل بومی ویندوز جهت فعال‌سازی موتور چیدمان واقعی راست‌به‌چپ (BiDi)"""
+    if sys.platform == "win32":
+        try:
+            hwnd = widget.winfo_id()
+            GWL_EXSTYLE = -20
+            WS_EX_RTLREADING = 0x00002000
+            
+            # دریافت استایل‌های فعلی پنجره تیکینتر
+            old_style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            # اضافه کردن ویژگی خوانش راست‌به‌چپ به استایل‌ها
+            new_style = old_style | WS_EX_RTLREADING
+            
+            ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+            
+            # به‌روزرسانی فریم پنجره برای اعمال تغییرات در لحظه
+            SWP_NOMOVE = 0x0002
+            SWP_NOSIZE = 0x0001
+            SWP_NOZORDER = 0x0004
+            SWP_FRAMECHANGED = 0x0020
+            ctypes.windll.user32.SetWindowPos(
+                hwnd, 0, 0, 0, 0, 0, 
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED
+            )
+        except Exception as e:
+            print(f"Error applying native Windows RTL style: {e}")
 
 def get_best_system_font() -> str:
     root_temp = tk.Tk()
@@ -296,14 +313,25 @@ class FloatingWindow(tk.Toplevel):
 
         self.model_dropdown_btn.bind("<Button-1>", show_custom_menu)
 
-        # ۳. باکس پیش‌نمایش متن ورودی
+        # ۳. باکس پیش‌نمایش متن ورودی (تغییر از Label به Entry جهت اعمال موفق چیدمان نیتیو)
         preview_frame = tk.Frame(self.main_container, bg=self.header_color, highlightthickness=1, highlightbackground=self.border_color)
         preview_frame.pack(fill=tk.X, padx=12, pady=5)
         
         preview_snippet = (self.captured_text[:110] + '...') if len(self.captured_text) > 110 else self.captured_text
-        preview_lbl = tk.Label(preview_frame, text=f"متن ورودی: {preview_snippet}", fg="#A6ADC8", 
-                               bg=self.header_color, justify="right", anchor="e", font=(self.app_font, 8, "italic"))
+        
+        preview_lbl = tk.Entry(
+            preview_frame, 
+            fg="#A6ADC8", 
+            bg=self.header_color, 
+            bd=0, 
+            highlightthickness=0, 
+            justify="right", 
+            font=(self.app_font, 8, "italic")
+        )
+        preview_lbl.insert(0, f"متن ورودی: {preview_snippet}")
+        preview_lbl.config(state="readonly")
         preview_lbl.pack(fill=tk.X, padx=8, pady=6)
+        force_rtl_reading_order(preview_lbl)
 
         # ۴. تب‌بند انتخاب حالت‌ها (چینش شبکه‌ای پویا با قابلیت شکستن خط و بسته‌بندی خودکار)
         tab_frame = tk.Frame(self.main_container, bg=self.bg_color)
@@ -356,10 +384,9 @@ class FloatingWindow(tk.Toplevel):
         def on_copy():
             try:
                 content = self.text_area.get("1.0", tk.END).strip()
-                content_clean = content.replace('\u202b', '').replace('\u202c', '').replace('\u200f', '')
-                if content_clean and "در حال پردازش" not in content_clean and "عذر می‌خوام" not in content_clean:
+                if content and "در حال پردازش" not in content and "عذر می‌خوام" not in content:
                     self.clipboard_clear()
-                    self.clipboard_append(content_clean)
+                    self.clipboard_append(content)
                     self.update()
                     copy_btn.config(text="✓ کپی شد", fg="#A6E3A1")
                     self.after(1500, lambda: copy_btn.config(text="کپی خروجی", fg=self.text_color))
@@ -369,11 +396,10 @@ class FloatingWindow(tk.Toplevel):
         def on_paste_replace():
             try:
                 content = self.text_area.get("1.0", tk.END).strip()
-                content_clean = content.replace('\u202b', '').replace('\u202c', '').replace('\u200f', '')
-                if content_clean and "در حال پردازش" not in content_clean and "عذر می‌خوام" not in content_clean:
+                if content and "در حال پردازش" not in content and "عذر می‌خوام" not in content:
                     # ۱. کپی خروجی تمیز در کلیپ‌بورد سیستم
                     self.clipboard_clear()
-                    self.clipboard_append(content_clean)
+                    self.clipboard_append(content)
                     self.update()
                     
                     # ۲. بستن فوری پنجره جاری
@@ -420,6 +446,9 @@ class FloatingWindow(tk.Toplevel):
                                  font=(self.app_font, 13), padx=12, pady=12, spacing2=8)
         self.text_area.pack(fill=tk.BOTH, expand=True)
         self.text_area.tag_configure("rtl", justify="right")
+        
+        # اعمال چیدمان نیتیو ویندوز جهت حل کامل مشکل تلاقی متون دو زبانه
+        force_rtl_reading_order(self.text_area)
 
     def trigger_processing(self):
         self.text_area.config(state=tk.NORMAL)
@@ -434,7 +463,7 @@ class FloatingWindow(tk.Toplevel):
                 self.text_area.config(state=tk.NORMAL)
                 self.text_area.delete("1.0", tk.END)
                 
-                # تراز کردن بی نقص جهت نگارش جملات دو زبانه
+                # نیازی به افزودن کاراکترهای کمکی نیست و متن به‌طور کامل رندر می‌شود
                 rtl_styled_text = apply_unicode_rtl(response_text)
                 
                 self.text_area.insert(tk.END, rtl_styled_text, "rtl")
