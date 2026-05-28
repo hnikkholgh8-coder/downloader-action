@@ -2,6 +2,7 @@ import os
 import json
 import time
 import threading
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox
 import tkinter.font as tkfont
@@ -10,12 +11,15 @@ import urllib.error
 from dataclasses import dataclass
 from typing import Optional, List
 
+# در صورت اجرا روی ویندوز، کتابخانه رجیستری وارد می‌شود
+if sys.platform == "win32":
+    import winreg
+
 # =====================================================================
 # تنظیمات امنیتی اولیه
 # =====================================================================
 OLLAMA_API_TOKEN: Optional[str] = "YOUR_OLLAMA_SECURE_TOKEN_HERE"
 
-# پرامپت‌های مهندسی‌شده و فوق‌العاده قوی برای خروجی‌های ۱٠٠٪ خالص
 PROMPTS = {
     "correction": (
         "You are an elite professional Persian editor. Your task is to rewrite the input text "
@@ -112,17 +116,15 @@ def is_text_mostly_persian(text: str) -> bool:
     return (persian_chars / total_chars) > 0.25
 
 def apply_unicode_rtl(text: str) -> str:
-    """اعمال نشانگرهای جفت‌جهته یونیکد برای تراز کامل علائم نگارشی نظیر نقطه در خروجی"""
+    """اعمال کاراکترهای کنترل جهت یونیکد (RLE و PDF) جهت رفع به‌هم‌ریختگی کلمات انگلیسی در متون فارسی"""
     if not text:
         return ""
     lines = text.split('\n')
     processed_lines = []
     for line in lines:
         if line.strip():
-            # تزریق RLM به ابتدا و انتهای جملات حاوی علائم نگارشی برای تراز بی‌نقص نقطه و پرانتز
-            new_line = '\u200f' + line
-            if line[-1] in ['.', '!', '؟', ':', ')', ']', '}']:
-                new_line += '\u200f'
+            # احاطه کردن خط با کاراکترهای جهت‌دهی راست‌به‌چپ برای اصلاح چینش عبارات ترکیبی
+            new_line = f"\u202b{line}\u202c"
             processed_lines.append(new_line)
         else:
             processed_lines.append(line)
@@ -336,7 +338,7 @@ class FloatingWindow(tk.Toplevel):
                     # ۲. بستن فوری پنجره جاری جهت حفظ پایداری کامل Thread اصلی تیکینتر
                     self.destroy()
                     
-                    # ۳. شبیه‌سازی مطمئن Paste در یک Thread آسنکرون پس‌زمینه (حل مشکل قفل شدن برنامه)
+                    # ۳. شبیه‌سازی مطمئن Paste در یک Thread پس‌زمینه
                     def run_async_paste():
                         time.sleep(0.2)  # زمان برای انتقال فوکوس فعال به نرم‌افزار هدف
                         keyboard_controller.press(Key.ctrl)
@@ -391,7 +393,7 @@ class FloatingWindow(tk.Toplevel):
                 self.text_area.config(state=tk.NORMAL)
                 self.text_area.delete("1.0", tk.END)
                 
-                # تراز کردن بی نقص جهت نگارش نقاط
+                # تراز کردن بی نقص جهت نگارش نقاط و عبارات انگلیسی
                 rtl_styled_text = apply_unicode_rtl(response_text)
                 
                 self.text_area.insert(tk.END, rtl_styled_text, "rtl")
@@ -641,8 +643,36 @@ class ModernAssistantApp:
         self.root.mainloop()
 
 # =====================================================================
+# تنظیم استارت‌آپ خودکار ویندوز
+# =====================================================================
+def register_in_startup() -> bool:
+    """اضافه کردن برنامه به استارت‌آپ ویندوز در رجیستری برای اجرای خودکار پس‌زمینه"""
+    if sys.platform != "win32":
+        print("سیستم‌عامل ویندوز نیست.")
+        return False
+    try:
+        exe_path = os.path.abspath(sys.argv[0])
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+        winreg.SetValueEx(key, "AI-Text-Assistant", 0, winreg.REG_SZ, f'"{exe_path}"')
+        winreg.CloseKey(key)
+        return True
+    except Exception as e:
+        print(f"خطا در ثبت استارت‌آپ: {e}")
+        return False
+
+# =====================================================================
 # شروع اجرای نرم‌افزار
 # =====================================================================
 if __name__ == "__main__":
+    # اگر برنامه با فلگ --startup فراخوانی شود، آدرس خود را در رجیستری ویندوز ثبت می‌کند و بسته می‌شود
+    if len(sys.argv) > 1 and sys.argv[1] == "--startup":
+        success = register_in_startup()
+        if success:
+            print("برنامه با موفقیت به استارت‌آپ ویندوز اضافه شد.")
+        else:
+            print("عملیات ناموفق بود.")
+        sys.exit(0)
+
     app = ModernAssistantApp()
     app.run()
