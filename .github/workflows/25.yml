@@ -3,7 +3,7 @@ name: Manual Build and Release
 on:
   workflow_dispatch:
 
-# ایجاد دسترسی نوشتن برای توکن گیت‌هاب (رفع خطای ۴۰۳)
+# مجوز دسترسی به اکشن جهت نوشتن و آپلود فایل در مخزن و ریلیس (حل خطای ۴۰۳)
 permissions:
   contents: write
 
@@ -16,10 +16,10 @@ jobs:
         uses: actions/checkout@v4
 
       # ==========================================
-      # راه‌اندازی نسخه پایدار پایتون ۳.۱۲
+      # راه‌اندازی پایتون ۳.۱۲ (سازگار با Nuitka)
       # ==========================================
-      - name: [Log] Initialize Setup
-        run: Write-Host "--- [INFO] Setting up Python 3.12 (Stable) ---"
+      - name: [Log] Setup Python
+        run: Write-Host "--- [INFO] Setting up Python 3.12 (Stable & Compatible) ---"
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
@@ -28,7 +28,7 @@ jobs:
           check-latest: true
 
       # ==========================================
-      # نصب وابستگی‌ها و بیلد با Nuitka
+      # نصب وابستگی‌ها و کامپایل با Nuitka
       # ==========================================
       - name: [Log] Build Preparation
         run: Write-Host "--- [INFO] Creating Environment & Compiling with Nuitka ---"
@@ -50,10 +50,9 @@ jobs:
           }
           
           Write-Host "[LOG] Executing Nuitka compilation. Please wait..."
-          # اصلاح فلگ کنسول طبق پیشنهاد لاگ کامپایلر شما
           .\venv\Scripts\python -m nuitka --standalone `
                            --onefile `
-                           --windows-console-mode=disable `
+                           --windows-disable-console `
                            --enable-plugins=tk-inter `
                            --assume-yes-for-downloads `
                            app.py
@@ -61,9 +60,9 @@ jobs:
           Write-Host "[SUCCESS] app.exe compiled successfully!"
 
       # ==========================================
-      # بارگذاری فایل اجرایی در بخش Release گیت‌هاب (بدون خطای ۴۰۳)
+      # روش اول: بارگذاری فایل در بخش ریلیس گیت‌هاب (با مجوز Write)
       # ==========================================
-      - name: [Log] Upload Artifacts
+      - name: [Log] Creating Release
         run: Write-Host "--- [INFO] Creating GitHub Release and uploading 'app.exe' ---"
 
       - name: Create or Update Release
@@ -72,7 +71,19 @@ jobs:
           artifacts: "app.exe"
           tag: "latest"
           name: "Latest Automated Build"
-          body: "این نسخه پایدار به صورت خودکار توسط GitHub Actions بیلد شده است."
+          body: "نسخه پایدار نهایی کامپایل‌شده توسط سرور گیت‌هاب اکشن."
           allowUpdates: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ==========================================
+      # روش دوم: آپلود فایل به عنوان Artifact (جهت دانلود مستقیم از صفحه اکشن)
+      # ==========================================
+      - name: [Log] Upload Artifact
+        run: Write-Host "--- [INFO] Uploading executable as build artifact ---"
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-app
+          path: app.exe
