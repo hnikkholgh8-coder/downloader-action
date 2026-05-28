@@ -1,13 +1,12 @@
 name: Manual Build and Release
 
 on:
-  workflow_dispatch: # امکان اجرای دستی از تب Actions
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
     
-    # اضافه کردن دسترسی لازم برای آپلود فایل و ایجاد ریلیز در مخزن شما
     permissions:
       contents: write
 
@@ -21,46 +20,64 @@ jobs:
           python-version: '3.12'
           check-latest: true
 
-      - name: Install Dependencies
+      # ۱. کش کردن محیط مجازی پایتون (کتابخانه‌ها)
+      - name: Cache Python Virtual Environment
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: venv
+          key: ${{ runner.os }}-venv-${{ hashFiles('**/requirements.txt') }}-${{ hashFiles('app.py') }}
+          restore-keys: |
+            ${{ runner.os }}-venv-
+
+      # ۲. نصب وابستگی‌ها فقط در صورتی که کش موجود نباشد (Cache Miss)
+      - name: Install Dependencies (If Cache Missed)
+        if: steps.cache-venv.outputs.cache-hit != 'true'
         run: |
-          echo "=== [1/3] Start setting up Python virtual environment ==="
+          echo "No cache found or code changed. Installing dependencies..."
           python -m venv venv
-          
-          echo "=== [2/3] Upgrading pip ==="
           .\venv\Scripts\python -m pip install --upgrade pip
-          
-          echo "=== [3/3] Installing Nuitka and libraries ==="
           .\venv\Scripts\pip install pynput pystray Pillow Nuitka
           if (Test-Path requirements.txt) { 
-             echo "Installing requirements.txt..."
              .\venv\Scripts\pip install -r requirements.txt 
           }
-          echo "Dependencies installation completed successfully."
+
+      # ۳. کش کردن پوشه دانلودها و کش کامپایل C نرم‌افزار Nuitka
+      - name: Cache Nuitka Cache and Downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/AppData/Local/Nuitka/Nuitka
+          key: ${{ runner.os }}-nuitka-${{ hashFiles('app.py') }}
+          restore-keys: |
+            ${{ runner.os }}-nuitka-
 
       - name: Build with Nuitka
         run: |
-          echo "=== Starting Nuitka Compilation (This may take a few minutes) ==="
-          # استفاده از فلگ اصلاح شده برای حذف هشدارهای کنسول Nuitka
+          echo "=== Starting Nuitka Compilation ==="
+          # فعال‌سازی محیط مجازی و کامپایل با استفاده از کش بهینه‌سازی شده
           .\venv\Scripts\python -m nuitka --standalone `
                            --onefile `
                            --windows-console-mode=disable `
                            --enable-plugins=tk-inter `
                            --assume-yes-for-downloads `
                            app.py
-          echo "Compilation finished. Checking output file..."
-          if (Test-Path app.exe) {
-             echo "Success! app.exe has been generated."
-          } else {
-             echo "Warning: app.exe was not found in the root folder."
-          }
+          echo "Compilation finished."
+
+      - name: Save Build as Artifact (Safety Net)
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiled-app-build-${{ github.run_number }}
+          path: app.exe
+          retention-days: 90
 
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "app.exe"
-          tag: "latest"
-          name: "Latest Automated Build"
-          body: "این نسخه به صورت خودکار با پایتون ۳.۱۲ و Nuitka کامپایل شده است."
+          tag: "build-${{ github.run_number }}"
+          name: "Build #${{ github.run_number }}"
+          body: "نسخه بهینه‌سازی شده با سیستم کش سرعت گیت‌هاب."
           allowUpdates: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
