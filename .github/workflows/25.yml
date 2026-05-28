@@ -14,48 +14,41 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+      # ۱. راه‌اندازی ابزار فوق‌سریع uv همراه با مدیریت خودکار پایتون ۳.۱۲ و کش پکیج‌ها
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: '3.12'
-          check-latest: true
+          version: "latest"
+          enable-cache: true
+          python-version: "3.12"
 
-      # ۱. کش کردن محیط مجازی پایتون (کتابخانه‌ها)
-      - name: Cache Python Virtual Environment
-        id: cache-venv
-        uses: actions/cache@v4
-        with:
-          path: venv
-          key: ${{ runner.os }}-venv-${{ hashFiles('**/requirements.txt') }}-${{ hashFiles('app.py') }}
-          restore-keys: |
-            ${{ runner.os }}-venv-
-
-      # ۲. نصب وابستگی‌ها فقط در صورتی که کش موجود نباشد (Cache Miss)
-      - name: Install Dependencies (If Cache Missed)
-        if: steps.cache-venv.outputs.cache-hit != 'true'
-        run: |
-          echo "No cache found or code changed. Installing dependencies..."
-          python -m venv venv
-          .\venv\Scripts\python -m pip install --upgrade pip
-          .\venv\Scripts\pip install pynput pystray Pillow Nuitka
-          if (Test-Path requirements.txt) { 
-             .\venv\Scripts\pip install -r requirements.txt 
-          }
-
-      # ۳. کش کردن پوشه دانلودها و کش کامپایل C نرم‌افزار Nuitka
-      - name: Cache Nuitka Cache and Downloads
+      # ۲. کش کردن دایرکتوری ابزارها و کدهای کامپایل‌شده C مربوط به Nuitka (clcache)
+      - name: Cache Nuitka Compiler and downloads
         uses: actions/cache@v4
         with:
           path: |
-            ~/AppData/Local/Nuitka/Nuitka
-          key: ${{ runner.os }}-nuitka-${{ hashFiles('app.py') }}
+            ~/AppData/Local/Nuitka/Nuitka/Cache
+          key: ${{ runner.os }}-nuitka-${{ hashFiles('**/app.py') }}
           restore-keys: |
             ${{ runner.os }}-nuitka-
 
+      # ۳. نصب سریع پکیج‌ها با استفاده از موتور قدرتمند uv
+      - name: Install Dependencies
+        run: |
+          echo "=== Creating virtual environment with uv ==="
+          uv venv venv
+          
+          echo "=== Installing packages ==="
+          # استفاده از uv برای نصب آنی کتابخانه‌ها درون محیط مجازی
+          uv pip install pynput pystray Pillow Nuitka --venv venv
+          if (Test-Path requirements.txt) { 
+             uv pip install -r requirements.txt --venv venv
+          }
+
+      # ۴. کامپایل فشرده پروژه با Nuitka (در دفعات دوم به بعد با سرعت باورنکردنی انجام می‌شود)
       - name: Build with Nuitka
         run: |
           echo "=== Starting Nuitka Compilation ==="
-          # فعال‌سازی محیط مجازی و کامپایل با استفاده از کش بهینه‌سازی شده
           .\venv\Scripts\python -m nuitka --standalone `
                            --onefile `
                            --windows-console-mode=disable `
@@ -64,6 +57,7 @@ jobs:
                            app.py
           echo "Compilation finished."
 
+      # ۵. آرتیفکت گیت‌هاب (کمربند ایمنی در صورت قطعی شبکه)
       - name: Save Build as Artifact (Safety Net)
         uses: actions/upload-artifact@v4
         with:
@@ -71,13 +65,14 @@ jobs:
           path: app.exe
           retention-days: 90
 
+      # ۶. ایجاد ریلیز نهایی در گیت‌هاب
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
         with:
           artifacts: "app.exe"
           tag: "build-${{ github.run_number }}"
           name: "Build #${{ github.run_number }}"
-          body: "نسخه بهینه‌سازی شده با سیستم کش سرعت گیت‌هاب."
+          body: "این نسخه به صورت خودکار با پایتون ۳.۱۲ و سیستم کش گیت‌هاب اکشن کامپایل شده است."
           allowUpdates: true
           makeLatest: true
           token: ${{ secrets.GITHUB_TOKEN }}
