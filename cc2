@@ -25,98 +25,104 @@ FA_TO_EN = {
     'آ': 'H', 'ژ': 'C', 'ء': 'M', 'أ': 'N', 'إ': 'B', 'ؤ': 'V', '«': 'K', '»': 'L', 'ة': 'Z', '؛': ';', 'ي': 'd', 'ك': ';'
 }
 
-# وزن‌های از پیش محاسبه شده برای انتقال کاراکترهای پرتکرار (Character Bigrams)
-COMMON_EN_BIGRAMS = {
-    'th', 'he', 'in', 'er', 'an', 're', 'on', 'at', 'en', 'es', 'of', 'or', 'nt', 'ea', 'ti', 'to', 
-    'it', 'st', 'io', 'le', 'is', 'ou', 'ar', 'as', 'de', 'rt', 've', 'co', 'me', 'ha', 'ne', 'se',
-    'ut', 'nd', 'al', 'hi', 'wi', 'wa', 'wh', 'yo', 'li', 'lo', 'ma', 'mi', 'ho', 'no', 'pe', 'pl'
-}
-
-COMMON_FA_BIGRAMS = {
-    'ان', 'ین', 'ار', 'ام', 'ون', 'ست', 'را', 'تا', 'بر', 'دی', 'ند', 'به', 'می', 'در', 'شن', 'خت',
-    'هر', 'یک', 'پر', 'ها', 'هم', 'کم', 'کر', 'من', 'تو', 'رو', 'جم', 'جه', 'شه', 'نه', 'مه', 'بد'
-}
-
 keyboard = Controller()
 
-def calculate_naturalness_score(word, lang='en'):
-    """محاسبه امتیاز طبیعی بودن بافتار کلمه بر اساس مدل آماری سبک‌وزن"""
-    if len(word) <= 1:
-        return 1.0  # تک‌کاراکترها همواره معتبر فرض می‌شوند
+def is_english_gibberish(word):
+    """بررسی احتمال نامفهوم بودن کلمه انگلیسی بر اساس قواعد واژه‌سازی"""
+    # حذف علائم نگارشی برای تحلیل دقیق خود کلمه
+    clean_word = re.sub(r'[^\w]', '', word).lower()
+    if len(clean_word) <= 1:
+        return False
         
-    score = 0.0
-    word = word.lower()
+    vowels = set('aeiouy')
+    v_count = sum(1 for c in clean_word if c in vowels)
     
-    if lang == 'en':
-        vowels = set('aeiouy')
-        # جریمه برای کلمات فاقد حروف صدادار یا با توزیع غیرطبیعی
-        vowel_count = sum(1 for c in word if c in vowels)
-        vowel_ratio = vowel_count / len(word)
-        if vowel_ratio < 0.2:
-            score -= 1.5
-            
-        common_count = 0
-        for i in range(len(word) - 1):
-            pair = word[i:i+2]
-            if pair in COMMON_EN_BIGRAMS:
-                common_count += 1.0
-            # جریمه تتابع بی‌صداها
-            if word[i] not in vowels and word[i+1] not in vowels:
-                score -= 0.3
-                
-        # اضافه کردن امتیاز تناسب بافتار بر اساس توالی هجاها
-        score += (common_count / (len(word) - 1)) * 2.5
+    # ۱. کلماتی که هیچ حرف صداداری ندارند (مثلاً sghl یا shlh) احتمالاً اشتباه تایپی هستند
+    if v_count == 0:
+        return True
         
-    elif lang == 'fa':
-        common_count = 0
-        for i in range(len(word) - 1):
-            pair = word[i:i+2]
-            if pair in COMMON_FA_BIGRAMS:
-                common_count += 1.0
-            # جریمه ترکیب‌های غیرممکن ناشی از لغزش روی ردیف‌های کیبورد انگلیسی
-            if pair in {'سص', 'صث', 'ثق', 'فغ', 'غع', 'هخ', 'خح', 'ضص', 'ظط', 'طز'}:
-                score -= 2.5
-                
-        score += (common_count / (len(word) - 1)) * 2.5
-        
-    return score
+    # ۲. نسبت بسیار پایین حروف صدادار در کلمات بلند
+    if len(clean_word) >= 4 and v_count / len(clean_word) < 0.15:
+        return True
 
-def is_gibberish(word, lang):
-    """تصمیم‌گیری در خصوص نامفهوم بودن کلمه با ارزیابی امتیاز مدل احتمالاتی"""
-    score = calculate_naturalness_score(word, lang)
-    # آستانه تجربی برای کلمات با طول‌های مختلف
-    threshold = 0.3 if len(word) > 3 else 0.1
-    return score < threshold
+    # ۳. تتابع بیش از حد حروف بی‌صدا (۴ صامت یا بیشتر پشت سر هم)
+    consonant_streak = 0
+    for c in clean_word:
+        if c not in vowels and c.isalpha():
+            consonant_streak += 1
+            if consonant_streak >= 4:
+                return True
+        else:
+            consonant_streak = 0
+
+    # ۴. تکرار پیاپی یک حرف بیش از دو بار
+    for i in range(len(clean_word) - 2):
+        if clean_word[i] == clean_word[i+1] == clean_word[i+2]:
+            return True
+
+    return False
+
+def is_persian_gibberish(word):
+    """بررسی احتمال نامفهوم بودن کلمه فارسی بر اساس حروف غیرهمخوان و مجاورت دکمه‌ها"""
+    clean_word = re.sub(r'[^\w\u0600-\u06FF]', '', word)
+    if len(clean_word) <= 1:
+        return False
+
+    # ۱. ترکیب حروف غیرممکن که به دلیل لغزش دست روی دکمه‌های مجاور کیبورد رخ می‌دهند
+    invalid_combinations = {
+        'سص', 'صث', 'ثق', 'فغ', 'غع', 'هخ', 'خح', 'جچ', 'شس', 'کگ', 'ظط', 'طز', 'رذ', 'ذد', 'دپ', 'پو',
+        'اا', 'دد', 'وو', 'ذذ', 'رر', 'زز', 'ژژ'
+    }
+    for i in range(len(clean_word) - 1):
+        if clean_word[i:i+2] in invalid_combinations:
+            return True
+
+    # ۲. عدم وجود حتی یکی از حروف بسیار پر تکرار زبان فارسی در کلمات بیش از دو حرف
+    if len(clean_word) >= 3:
+        common_chars = set('اویردنمهبتس')
+        has_common = any(c in common_chars for c in clean_word)
+        if not has_common:
+            return True
+
+    return False
 
 def smart_correct_text(text):
     if not text:
         return text
 
-    # تفکیک متن و حفظ ساختار فضاهای خالی و کاراکترهای جداکننده
-    tokens = re.split(r'(\s+|[^\w\u0600-\u06FF]+)', text)
+    # تفکیک متن صرفاً بر اساس فضاهای خالی (اسپیس، تب، خط جدید) جهت تحلیل واژه‌ها بین دو اسپیس
+    tokens = re.split(r'(\s+)', text)
     
     result = []
     for token in tokens:
-        # اگر توکن فاصله یا علامت نگارشی بود بدون تغییر بماند
-        if not token.strip() or not re.match(r'^[\w\u0600-\u06FF]+$', token):
+        # اگر توکن فضای خالی بود، بدون تغییر به نتیجه اضافه شود
+        if not token.strip():
             result.append(token)
             continue
 
-        has_fa = bool(re.search(r'[\u0600-\u06FF]', token))
-        has_en = bool(re.search(r'[a-zA-Z]', token))
+        # تفکیک بخش الفبایی از علائم نگارشی احتمالی چسبیده به کلمه (مانند کاما یا نقطه در انتهای کلمه)
+        match = re.match(r'^([^\w\u0600-\u06FF]*)([\w\u0600-\u06FF]+)([^\w\u0600-\u06FF]*)$', token)
+        if not match:
+            result.append(token)
+            continue
+            
+        prefix, word, suffix = match.groups()
+
+        has_fa = bool(re.search(r'[\u0600-\u06FF]', word))
+        has_en = bool(re.search(r'[a-zA-Z]', word))
 
         if has_fa:
-            # کلمه با حروف فارسی تایپ شده، ارزیابی بافتار فارسی
-            if is_gibberish(token, 'fa'):
-                converted = "".join(FA_TO_EN.get(c, c) for c in token)
-                result.append(converted)
+            # کلمه با حروف فارسی؛ در صورت نامفهوم بودن تبدیل به انگلیسی شود
+            if is_persian_gibberish(word):
+                converted = "".join(FA_TO_EN.get(c, c) for c in word)
+                result.append(prefix + converted + suffix)
             else:
                 result.append(token)
         elif has_en:
-            # کلمه با حروف انگلیسی تایپ شده، ارزیابی بافتار انگلیسی
-            if is_gibberish(token, 'en'):
-                converted = "".join(EN_TO_FA.get(c, c) for c in token)
-                result.append(converted)
+            # کلمه با حروف انگلیسی؛ در صورت نامفهوم بودن تبدیل به فارسی شود
+            if is_english_gibberish(word):
+                converted = "".join(EN_TO_FA.get(c, c) for c in word)
+                result.append(prefix + converted + suffix)
             else:
                 result.append(token)
         else:
@@ -154,7 +160,7 @@ def on_activate():
         old_clipboard = safe_clip_get()
         safe_clip_set("")
 
-        # کپی کردن متن منتخب
+        # شبیه‌سازی کپی متن
         keyboard.press(Key.ctrl)
         keyboard.press('c')
         time.sleep(0.08)
@@ -168,11 +174,11 @@ def on_activate():
             safe_clip_set(old_clipboard)
             return
 
-        # تصحیح هوشمند بافتاری متن تفکیک شده
+        # تصحیح هوشمند متن بر مبنای تحلیل واژه‌ها
         corrected_text = smart_correct_text(selected_text)
 
         if safe_clip_set(corrected_text):
-            # جایگذاری متن اصلاح شده
+            # شبیه‌سازی پیست متن
             keyboard.press(Key.ctrl)
             keyboard.press('v')
             time.sleep(0.08)
@@ -203,7 +209,7 @@ def setup_tray():
     icon_image = create_image()
     menu = pystray.Menu(pystray.MenuItem('Exit', on_exit))
     
-    tooltip_text = "من زنده‌ام!\nمتن را انتخاب کنید و کلیدهای Ctrl+Shift+K را بزنید."
+    tooltip_text = "من زنده‌ام!\nمتن را انتخاب کنید و کلیدهای Ctrl+Shift+L را بزنید."
     
     icon = pystray.Icon("keyboard_converter", icon_image, title=tooltip_text, menu=menu)
     icon.run()
@@ -241,8 +247,9 @@ if __name__ == "__main__":
     if "--startup" in sys.argv:
         add_to_startup()
 
+    # تعریف کلید میانبر جدید بر اساس درخواست شما (Ctrl + Shift + L)
     hotkey_listener = GlobalHotKeys({
-        '<ctrl>+<shift>+k': on_activate
+        '<ctrl>+<shift>+l': on_activate
     })
     hotkey_listener.start()
 
