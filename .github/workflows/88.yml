@@ -1,4 +1,5 @@
-name: Manual Build and Release v4
+name: Manual Build and Release v5
+
 
 on:
   workflow_dispatch:
@@ -27,7 +28,15 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # ۱. راه‌اندازی ابزار فوق‌سریع uv همراه با مدیریت خودکار پایتون ۳.۱۲ و کش پکیج‌ها
+      # ۱. تولید تگ کاملاً داینامیک بر اساس تاریخ و ساعت ثانیه ساخت
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          $date_str = Get-Date -Format "yyyy.MM.dd-HHmmss"
+          echo "TAG_NAME=v-$date_str" >> $env:GITHUB_ENV
+        shell: powershell
+
+      # ۲. راه‌اندازی ابزار فوق‌سریع uv همراه با مدیریت خودکار پایتون ۳.۱۲ و کش پکیج‌ها
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
         with:
@@ -35,7 +44,7 @@ jobs:
           enable-cache: true
           python-version: "3.12"
 
-      # ۲. کش کردن دایرکتوری ابزارها و کدهای کامپایل‌شده C مربوط به Nuitka
+      # ۳. کش کردن دایرکتوری ابزارها و کدهای کامپایل‌شده C مربوط به Nuitka
       - name: Cache Nuitka Compiler and downloads
         uses: actions/cache@v4
         with:
@@ -45,7 +54,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-nuitka-
 
-      # ۳. نصب پکیج‌ها به صورت پویا بر اساس ورودی کاربر
+      # ۴. نصب پکیج‌ها به صورت پویا بر اساس ورودی کاربر
       - name: Install Dependencies
         run: |
           echo "=== Creating virtual environment with uv ==="
@@ -57,7 +66,7 @@ jobs:
              uv pip install -r requirements.txt
           }
 
-      # ۴. کامپایل فشرده با استفاده از فایل و فلگ‌های تعیین شده توسط کاربر
+      # ۵. کامپایل فشرده با استفاده از فایل و فلگ‌های تعیین شده توسط کاربر
       - name: Build with Nuitka
         run: |
           echo "=== Starting Nuitka Compilation ==="
@@ -67,22 +76,22 @@ jobs:
           .\.venv\Scripts\python -m nuitka ${{ github.event.inputs.nuitka_flags }} "${{ github.event.inputs.entrypoint }}"
           echo "Compilation finished."
 
-      # ۵. آرتیفکت گیت‌هاب (کمربند ایمنی فعال - تحت هر شرایطی فایل اگزه در این بخش ذخیره می‌شود)
+      # ۶. آرتیفکت گیت‌هاب (کمربند ایمنی فعال - همیشه فایل در این بخش ذخیره می‌شود)
       - name: Save Build as Artifact (Safety Net)
         uses: actions/upload-artifact@v4
         with:
-          name: compiled-app-build-${{ github.run_number }}
+          name: compiled-app-build-${{ env.TAG_NAME }}
           path: "*.exe"
           retention-days: 90
 
-      # ۶. ایجاد ریلیز نهایی در گیت‌هاب (همراه با نادیده گرفتن خطاهای امنیتی مخزن)
+      # ۷. ایجاد ریلیز نهایی در گیت‌هاب با تگ زمانی (و استفاده از سکرت شخصی شما در صورت فعال‌سازی)
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
-        continue-on-error: true # سوپاپ اطمینان: در صورت محدودیت قوانین گیت‌هاب شما، کل پروسه با خطا مواجه نمی‌شود
+        continue-on-error: true # سوپاپ اطمینان: حتی در صورت خطای گیت‌هاب، اکشن شما سبز می‌ماند
         with:
           artifacts: "*.exe"
-          tag: "build-${{ github.run_number }}"
-          name: "Build #${{ github.run_number }}"
+          tag: "${{ env.TAG_NAME }}"
+          name: "Release ${{ env.TAG_NAME }}"
           body: |
              توضیحات ریلیز خودکار:
              - فایل ورودی: [${{ github.event.inputs.entrypoint }}]
@@ -90,4 +99,6 @@ jobs:
              - فلگ‌های استفاده شده: [${{ github.event.inputs.nuitka_flags }}]
           allowUpdates: true
           makeLatest: true
+          # نکته: اگر با توکن پیش‌فرض خطا داد، RELEASE_PAT را که در بالا توضیح داده شد بسازید و خط پایین را از کامنت خارج کنید:
+          # token: ${{ secrets.RELEASE_PAT }}
           token: ${{ secrets.GITHUB_TOKEN }}
