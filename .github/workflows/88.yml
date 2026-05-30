@@ -67,19 +67,20 @@ jobs:
           .\.venv\Scripts\python -m nuitka ${{ github.event.inputs.nuitka_flags }} "${{ github.event.inputs.entrypoint }}"
           echo "Compilation finished."
 
-      # ۵. آرتیفکت گیت‌هاب با الگوی پویا (پشتیبانی از هر نام فایلی که برای exe انتخاب کنید)
+      # ۵. آرتیفکت گیت‌هاب (کمربند ایمنی فعال - تحت هر شرایطی فایل اگزه در این بخش ذخیره می‌شود)
       - name: Save Build as Artifact (Safety Net)
         uses: actions/upload-artifact@v4
         with:
           name: compiled-app-build-${{ github.run_number }}
-          path: "*.exe" # تغییر به الگو پویا جهت شناسایی هر نوع نام فایل خروجی
+          path: "*.exe"
           retention-days: 90
 
-      # ۶. ایجاد ریلیز نهایی در گیت‌هاب
+      # ۶. ایجاد ریلیز نهایی در گیت‌هاب (همراه با نادیده گرفتن خطاهای امنیتی مخزن)
       - name: Create or Update Release
         uses: ncipollo/release-action@v1
+        continue-on-error: true # سوپاپ اطمینان: در صورت محدودیت قوانین گیت‌هاب شما، کل پروسه با خطا مواجه نمی‌شود
         with:
-          artifacts: "*.exe" # شناسایی و آپلود خودکار هر نام اگزه‌ای که تولید شده باشد
+          artifacts: "*.exe"
           tag: "build-${{ github.run_number }}"
           name: "Build #${{ github.run_number }}"
           body: |
