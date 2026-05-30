@@ -1,0 +1,249 @@
+import sys
+import os
+import re
+import time
+from PIL import Image, ImageDraw
+import pyperclip
+from pynput.keyboard import Controller, Key, GlobalHotKeys
+import pystray
+
+# نگاشت منطبق بر کیبورد فارسی استاندارد ویندوز (Windows Layout)
+EN_TO_FA = {
+    'q': 'ض', 'w': 'ص', 'e': 'ث', 'r': 'ق', 't': 'ف', 'y': 'غ', 'u': 'ع', 'i': 'ه', 'o': 'خ', 'p': 'ح', '[': 'ج', ']': 'چ', '\\': 'پ',
+    'a': 'ش', 's': 'س', 'd': 'ی', 'f': 'ب', 'g': 'ل', 'h': 'ا', 'j': 'ت', 'k': 'ن', 'l': 'م', ';': 'ک', "'": 'گ',
+    'z': 'ظ', 'x': 'ط', 'c': 'ز', 'v': 'ر', 'b': 'ذ', 'n': 'د', 'm': 'ئ', ',': 'و', '.': '.', '/': '/',
+    'Q': 'َ', 'W': 'ً', 'E': 'ُ', 'R': 'ٌ', 'T': 'لإ', 'Y': 'إ', 'U': 'أ', 'I': 'ِ', 'O': 'ٍ', 'P': 'ّ', '{': '[', '}': ']', '|': 'ژ',
+    'A': 'ِ', 'S': 'ٍ', 'D': ']', 'F': '[', 'G': 'لأ', 'H': 'آ', 'J': 'ـ', 'K': '«', 'L': '»', ':': ':', '"': '"',
+    'Z': 'ة', 'X': 'ی', 'C': 'ژ', 'V': 'ؤ', 'B': 'لا', 'N': 'أ', 'M': 'ء', '<': '>', '>': '<', '?': '؟'
+}
+
+# نگاشت صریح فارسی به انگلیسی (اولویت با حروف کوچک)
+FA_TO_EN = {
+    'ض': 'q', 'ص': 'w', 'ث': 'e', 'ق': 'r', 'ف': 't', 'غ': 'y', 'ع': 'u', 'ه': 'i', 'خ': 'o', 'ح': 'p', 'ج': '[', 'چ': ']', 'پ': '\\',
+    'ش': 'a', 'س': 's', 'ی': 'd', 'ب': 'f', 'ل': 'g', 'ا': 'h', 'ت': 'j', 'ن': 'k', 'م': 'l', 'ک': ';', 'گ': "'",
+    'ظ': 'z', 'ط': 'x', 'ز': 'c', 'ر': 'v', 'ذ': 'b', 'د': 'n', 'ئ': 'm', 'و': ',', '٫': '.', '؟': '?',
+    'آ': 'H', 'ژ': 'C', 'ء': 'M', 'أ': 'N', 'إ': 'B', 'ؤ': 'V', '«': 'K', '»': 'L', 'ة': 'Z', '؛': ';', 'ي': 'd', 'ك': ';'
+}
+
+# وزن‌های از پیش محاسبه شده برای انتقال کاراکترهای پرتکرار (Character Bigrams)
+COMMON_EN_BIGRAMS = {
+    'th', 'he', 'in', 'er', 'an', 're', 'on', 'at', 'en', 'es', 'of', 'or', 'nt', 'ea', 'ti', 'to', 
+    'it', 'st', 'io', 'le', 'is', 'ou', 'ar', 'as', 'de', 'rt', 've', 'co', 'me', 'ha', 'ne', 'se',
+    'ut', 'nd', 'al', 'hi', 'wi', 'wa', 'wh', 'yo', 'li', 'lo', 'ma', 'mi', 'ho', 'no', 'pe', 'pl'
+}
+
+COMMON_FA_BIGRAMS = {
+    'ان', 'ین', 'ار', 'ام', 'ون', 'ست', 'را', 'تا', 'بر', 'دی', 'ند', 'به', 'می', 'در', 'شن', 'خت',
+    'هر', 'یک', 'پر', 'ها', 'هم', 'کم', 'کر', 'من', 'تو', 'رو', 'جم', 'جه', 'شه', 'نه', 'مه', 'بد'
+}
+
+keyboard = Controller()
+
+def calculate_naturalness_score(word, lang='en'):
+    """محاسبه امتیاز طبیعی بودن بافتار کلمه بر اساس مدل آماری سبک‌وزن"""
+    if len(word) <= 1:
+        return 1.0  # تک‌کاراکترها همواره معتبر فرض می‌شوند
+        
+    score = 0.0
+    word = word.lower()
+    
+    if lang == 'en':
+        vowels = set('aeiouy')
+        # جریمه برای کلمات فاقد حروف صدادار یا با توزیع غیرطبیعی
+        vowel_count = sum(1 for c in word if c in vowels)
+        vowel_ratio = vowel_count / len(word)
+        if vowel_ratio < 0.2:
+            score -= 1.5
+            
+        common_count = 0
+        for i in range(len(word) - 1):
+            pair = word[i:i+2]
+            if pair in COMMON_EN_BIGRAMS:
+                common_count += 1.0
+            # جریمه تتابع بی‌صداها
+            if word[i] not in vowels and word[i+1] not in vowels:
+                score -= 0.3
+                
+        # اضافه کردن امتیاز تناسب بافتار بر اساس توالی هجاها
+        score += (common_count / (len(word) - 1)) * 2.5
+        
+    elif lang == 'fa':
+        common_count = 0
+        for i in range(len(word) - 1):
+            pair = word[i:i+2]
+            if pair in COMMON_FA_BIGRAMS:
+                common_count += 1.0
+            # جریمه ترکیب‌های غیرممکن ناشی از لغزش روی ردیف‌های کیبورد انگلیسی
+            if pair in {'سص', 'صث', 'ثق', 'فغ', 'غع', 'هخ', 'خح', 'ضص', 'ظط', 'طز'}:
+                score -= 2.5
+                
+        score += (common_count / (len(word) - 1)) * 2.5
+        
+    return score
+
+def is_gibberish(word, lang):
+    """تصمیم‌گیری در خصوص نامفهوم بودن کلمه با ارزیابی امتیاز مدل احتمالاتی"""
+    score = calculate_naturalness_score(word, lang)
+    # آستانه تجربی برای کلمات با طول‌های مختلف
+    threshold = 0.3 if len(word) > 3 else 0.1
+    return score < threshold
+
+def smart_correct_text(text):
+    if not text:
+        return text
+
+    # تفکیک متن و حفظ ساختار فضاهای خالی و کاراکترهای جداکننده
+    tokens = re.split(r'(\s+|[^\w\u0600-\u06FF]+)', text)
+    
+    result = []
+    for token in tokens:
+        # اگر توکن فاصله یا علامت نگارشی بود بدون تغییر بماند
+        if not token.strip() or not re.match(r'^[\w\u0600-\u06FF]+$', token):
+            result.append(token)
+            continue
+
+        has_fa = bool(re.search(r'[\u0600-\u06FF]', token))
+        has_en = bool(re.search(r'[a-zA-Z]', token))
+
+        if has_fa:
+            # کلمه با حروف فارسی تایپ شده، ارزیابی بافتار فارسی
+            if is_gibberish(token, 'fa'):
+                converted = "".join(FA_TO_EN.get(c, c) for c in token)
+                result.append(converted)
+            else:
+                result.append(token)
+        elif has_en:
+            # کلمه با حروف انگلیسی تایپ شده، ارزیابی بافتار انگلیسی
+            if is_gibberish(token, 'en'):
+                converted = "".join(EN_TO_FA.get(c, c) for c in token)
+                result.append(converted)
+            else:
+                result.append(token)
+        else:
+            result.append(token)
+
+    return "".join(result)
+
+def safe_clip_get(retries=5, delay=0.05):
+    for _ in range(retries):
+        try:
+            return pyperclip.paste()
+        except Exception:
+            time.sleep(delay)
+    return ""
+
+def safe_clip_set(text, retries=5, delay=0.05):
+    for _ in range(retries):
+        try:
+            pyperclip.copy(text)
+            return True
+        except Exception:
+            time.sleep(delay)
+    return False
+
+def on_activate():
+    try:
+        time.sleep(0.3)
+
+        for key in [Key.ctrl, Key.shift, Key.alt, Key.cmd]:
+            try:
+                keyboard.release(key)
+            except Exception:
+                pass
+
+        old_clipboard = safe_clip_get()
+        safe_clip_set("")
+
+        # کپی کردن متن منتخب
+        keyboard.press(Key.ctrl)
+        keyboard.press('c')
+        time.sleep(0.08)
+        keyboard.release('c')
+        keyboard.release(Key.ctrl)
+
+        time.sleep(0.12)
+        selected_text = safe_clip_get()
+
+        if not selected_text.strip():
+            safe_clip_set(old_clipboard)
+            return
+
+        # تصحیح هوشمند بافتاری متن تفکیک شده
+        corrected_text = smart_correct_text(selected_text)
+
+        if safe_clip_set(corrected_text):
+            # جایگذاری متن اصلاح شده
+            keyboard.press(Key.ctrl)
+            keyboard.press('v')
+            time.sleep(0.08)
+            keyboard.release('v')
+            keyboard.release(Key.ctrl)
+
+        time.sleep(0.15)
+        safe_clip_set(old_clipboard)
+
+    except Exception:
+        pass
+
+def create_image():
+    image = Image.new('RGB', (64, 64), color=(44, 62, 80))
+    dc = ImageDraw.Draw(image)
+    dc.rectangle([10, 22, 54, 42], outline=(236, 240, 241), width=3)
+    dc.rectangle([15, 27, 21, 31], fill=(236, 240, 241))
+    dc.rectangle([25, 27, 31, 31], fill=(236, 240, 241))
+    dc.rectangle([35, 27, 41, 31], fill=(236, 240, 241))
+    dc.rectangle([20, 35, 44, 38], fill=(236, 240, 241))
+    return image
+
+def setup_tray():
+    def on_exit(icon, item):
+        icon.stop()
+        hotkey_listener.stop()
+
+    icon_image = create_image()
+    menu = pystray.Menu(pystray.MenuItem('Exit', on_exit))
+    
+    tooltip_text = "من زنده‌ام!\nمتن را انتخاب کنید و کلیدهای Ctrl+Shift+K را بزنید."
+    
+    icon = pystray.Icon("keyboard_converter", icon_image, title=tooltip_text, menu=menu)
+    icon.run()
+
+def add_to_startup():
+    if os.name != 'nt':
+        print("ثبت در استارتاپ فقط در سیستم‌عامل ویندوز پشتیبانی می‌شود.")
+        return False
+    
+    import winreg
+    
+    if getattr(sys, 'frozen', False):
+        app_path = os.path.abspath(sys.executable)
+    else:
+        app_path = f'"{os.path.abspath(sys.executable)}" "{os.path.abspath(sys.argv[0])}"'
+        
+    key_name = "WinKeyboardConverter"
+    
+    try:
+        key = winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_SET_VALUE
+        )
+        winreg.SetValueEx(key, key_name, 0, winreg.REG_SZ, app_path)
+        winreg.CloseKey(key)
+        print("برنامه با موفقیت به استارتاپ ویندوز اضافه شد.")
+        return True
+    except Exception as e:
+        print(f"خطا در ثبت استارتاپ: {e}")
+        return False
+
+if __name__ == "__main__":
+    if "--startup" in sys.argv:
+        add_to_startup()
+
+    hotkey_listener = GlobalHotKeys({
+        '<ctrl>+<shift>+k': on_activate
+    })
+    hotkey_listener.start()
+
+    setup_tray()
