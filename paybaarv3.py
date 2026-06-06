@@ -17,8 +17,8 @@ import time
 import win32gui
 import win32con
 import win32api
-import win32serviceutil
 import win32service
+import win32serviceutil
 import win32event
 import servicemanager
 
@@ -27,9 +27,9 @@ import requests
 from sqlalchemy import create_engine, Column, String, Integer, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.exc import IntegrityError
-from apscheduler.schedulers.background import BackgroundScheduler
 import tkinter as tk
 from tkinter import messagebox, ttk
+import tkinter.font as tkfont
 
 # --- تنظیمات لاگینگ چرخشی ۵ مگابایت و حداکثر ۲۰ روز (فایل) ---
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "paybaar_service.log")
@@ -42,7 +42,7 @@ logger.addHandler(log_handler)
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "config.json")
 
-# مقادیر پیش‌فرض پایگاه داده و وب‌سرویس
+# مقادیر پیش‌فرض پایگاه داده و وب‌سرویس (تضمین کارکرد در غیاب پیکربندی خارجی)
 DEFAULT_CONFIG = {
     "db_host": "192.168.20.5",
     "db_user": "root",
@@ -55,20 +55,19 @@ DEFAULT_CONFIG = {
 }
 
 def load_config():
-    if not os.path.exists(CONFIG_FILE):
+    """لود هوشمند تنظیمات به همراه ادغام با مقادیر پیش‌فرض جهت جلوگیری از فیلدهای خالی"""
+    config = DEFAULT_CONFIG.copy()
+    if os.path.exists(CONFIG_FILE):
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
-            return DEFAULT_CONFIG
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    for k, v in loaded.items():
+                        if v and str(v).strip() != "":
+                            config[k] = v
         except Exception as e:
-            logger.error(f"Cannot write default config file: {e}")
-            return DEFAULT_CONFIG
-    try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading config, using default values: {e}")
-        return DEFAULT_CONFIG
+            logger.error(f"Error loading config, using default values: {e}")
+    return config
 
 def save_config(config_data):
     try:
@@ -78,7 +77,7 @@ def save_config(config_data):
     except Exception as e:
         logger.error(f"Error saving config file: {e}")
 
-# بارگذاری تنظیمات
+# بارگذاری اولیه تنظیمات
 current_config = load_config()
 
 # --- ساختار دیتابیس (SQLAlchemy) ---
@@ -287,64 +286,73 @@ def sql_backup():
         logger.error(f"Backup failed: {e}")
 
 
-# --- تابع تست زنده صحت عملکرد سرویس پایبار کلاینت ---
+# --- سیستم اختصاصی و بومی مدیریت ویندوز سرویس ---
 
-def run_self_test():
-    logger.info("Executing Self-Test Diagnostic...")
-    print("--- شروع تست خودکار صحت عملکرد پایبار ---")
-    
-    # تست تبدیل اعداد
-    assert convert_numbers("۱۲۳۴۵") == "12345", "خطا در تست تبدیل اعداد فارسی"
-    assert convert_numbers("١٢٣٤٥") == "12345", "خطا در تست تبدیل اعداد عربی"
-    print("[+] تست تبدیل ساختار یونیکد اعداد: تایید شد.")
-
-    # تست الگوریتم تفکیک پلاک
-    raw_tag = "\\u06f1\\u06f2\\u0639\\u06f3\\u06f4\\u06f5 \\u0627\\u064a\\u0631\\u0627\\u0646 \\u06f9\\u06f9"  # ۱۲ع۳۴۵ ایران ۹۹
-    n1, l, n2 = split_car_tag(raw_tag)
-    
-    n1_clean = int(convert_numbers(n1)) if n1 else None
-    n2_clean = int(convert_numbers(n2)) if n2 else None
-
-    assert n1_clean == 12, f"خطا در تفکیک بخش اول پلاک: خروجی {n1_clean}"
-    assert n2_clean == 345, f"خطا در تفکیک بخش دوم پلاک: خروجی {n2_clean}"
-    print("[+] تست الگوریتم و توابع تجزیه پلاک خودرو: تایید شد.")
-
-    # تست یکپارچگی ثبت تراکنش دیتابیس (با متد Rollback جهت دست‌نخورده ماندن دیتای زنده)
+def install_service_programmatic():
+    """ثبت برنامه‌نویسی شده سرویس در رجیستری ویندوز بدون استفاده از فراخوانی فایل شل"""
+    exe_path = os.path.abspath(sys.argv[0])
     try:
-        engine = get_engine()
-        Base.metadata.create_all(engine)
-        Session = sessionmaker(bind=engine)
-        session = Session()
-        
-        test_record = Paybaar(
-            bol_number="TEST_SELF_TEST_RECORD",
-            bol_serial_number="999999",
-            bol_date="1402/12/29",
-            bol_time="12:00",
-            bol_weight=1000,
-            commodity="تست یکپارچگی",
-            package_type="تست"
-        )
-        session.add(test_record)
-        session.flush()
-        
-        fetched = session.query(Paybaar).filter_by(bol_number="TEST_SELF_TEST_RECORD").first()
-        assert fetched is not None, "رکورد تستی موقت در پایگاه داده ایجاد نشد."
-        
-        session.rollback()
-        print("[+] تست صحت اتصال پایگاه داده و ذخیره‌سازی موقت تراکنش: تایید شد.")
-        print("🟢 تست‌های صحت عملکرد تماماً با موفقیت سپری شدند. خروجی هر دو سیستم کاملاً یکسان است.")
-        return True, "تمامی تست‌های تطابق الگوریتم و صحت اتصال پایگاه داده موفقیت‌آمیز بودند."
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CREATE_SERVICE)
+        try:
+            svc = win32service.CreateService(
+                scm,
+                "PaybaarFetchService",
+                "Paybaar API Weighbridge Data Fetcher",
+                win32service.SERVICE_ALL_ACCESS,
+                win32service.SERVICE_WIN32_OWN_PROCESS,
+                win32service.SERVICE_AUTO_START,
+                win32service.SERVICE_ERROR_NORMAL,
+                f'"{exe_path}" --run-as-service',  # ساخت پارامتر مستقیم جهت تفکیک با مد گرافیکی
+                None, 0, None, None, None
+            )
+            win32service.CloseServiceHandle(svc)
+            win32service.CloseServiceHandle(scm)
+            return True, "سرویس واکشی پایبار با موفقیت ثبت و نصب شد."
+        except Exception as e:
+            win32service.CloseServiceHandle(scm)
+            return False, f"خطا در ایجاد سرویس:\n{str(e)}"
     except Exception as e:
-        logger.error(f"Self-Test integration failed: {e}")
-        print(f"🔴 خطا در تست یکپارچگی سیستم: {e}")
-        return False, f"خطا در یکپارچگی سیستم:\n{str(e)}"
+        return False, f"عدم دسترسی به بخش سرویس‌های سیستم‌عامل:\n{str(e)}"
 
+def uninstall_service_programmatic():
+    """حذف برنامه‌نویسی شده سرویس به همراه توقف خودکار آن قبل از خروج"""
+    try:
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CREATE_SERVICE)
+        try:
+            svc = win32service.OpenService(scm, "PaybaarFetchService", win32service.SERVICE_ALL_ACCESS)
+            try:
+                # تلاش برای متوقف کردن سرویس قبل از پاک‌کردن از سیستم
+                win32service.ControlService(svc, win32service.SERVICE_CONTROL_STOP)
+            except Exception:
+                pass
+            win32service.DeleteService(svc)
+            win32service.CloseServiceHandle(svc)
+            win32service.CloseServiceHandle(scm)
+            return True, "سرویس واکشی پایبار با موفقیت متوقف و حذف گردید."
+        except Exception as e:
+            win32service.CloseServiceHandle(scm)
+            return False, f"خطا در یافتن یا حذف سرویس:\n{str(e)}"
+    except Exception as e:
+        return False, f"عدم دسترسی به بخش سرویس‌های سیستم‌عامل:\n{str(e)}"
 
-# --- تابع مانیتورینگ آنلاین وضعیت سرویس ویندوز ---
+def start_service_programmatic():
+    """استارت زدن بومی ویندوز سرویس"""
+    try:
+        scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+        try:
+            svc = win32service.OpenService(scm, "PaybaarFetchService", win32service.SERVICE_START)
+            win32service.StartService(svc, None)
+            win32service.CloseServiceHandle(svc)
+            win32service.CloseServiceHandle(scm)
+            return True, "سرویس واکشی پایبار با موفقیت استارت خورد."
+        except Exception as e:
+            win32service.CloseServiceHandle(scm)
+            return False, f"خطا در فعال‌سازی سرویس:\n{str(e)}"
+    except Exception as e:
+        return False, f"عدم دسترسی به کنترلر سیستم‌عامل:\n{str(e)}"
 
 def check_service_status():
-    """پایش وضعیت نصب و اجرای سرویس ویندوز از طریق کنترلر ویندوز (SCM)"""
+    """پایش وضعیت زنده نصب و اجرای سرویس ویندوز"""
     try:
         scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
         try:
@@ -353,7 +361,6 @@ def check_service_status():
             win32service.CloseServiceHandle(h_service)
             win32service.CloseServiceHandle(scm)
             
-            # بررسی کد وضعیت برگشتی سرویس از هسته سیستم عامل
             current_state = status_info[1]
             if current_state == win32service.SERVICE_RUNNING:
                 return "فعال و در حال اجرا 🟢"
@@ -362,15 +369,13 @@ def check_service_status():
             elif current_state == win32service.SERVICE_START_PENDING:
                 return "در حال راه‌اندازی... ⏳"
             else:
-                return "در حال توقف یا تغییر وضعیت 🟡"
+                return "در حال تغییر وضعیت 🟡"
         except Exception:
-            # در صورتی که سرویس در رجیستری رجیستر نشده باشد هندل با خطا مواجه می‌شود
             return "نصب نشده روی این سیستم 🔴"
     except Exception:
         return "عدم دسترسی به کنترلر سیستم‌عامل 🔴"
 
-
-# --- ساختار ویندوز سرویس ---
+# --- بدنه اصلی ویندوز سرویس ---
 
 class PaybaarFetchService(win32serviceutil.ServiceFramework):
     _svc_name_ = "PaybaarFetchService"
@@ -412,7 +417,60 @@ class PaybaarFetchService(win32serviceutil.ServiceFramework):
                 break
 
 
-# --- کلاس فرعی ساخت Tray Icon بدون تکیه بر بسته‌های سنگین خارجی ---
+# --- سیستم تست درونی صحت عملکرد (Self-Test) ---
+
+def run_self_test():
+    logger.info("Executing Self-Test Diagnostic...")
+    print("--- شروع تست خودکار صحت عملکرد پایبار ---")
+    
+    # تست تبدیل اعداد
+    assert convert_numbers("۱۲۳۴۵") == "12345", "خطا در تست تبدیل اعداد فارسی"
+    assert convert_numbers("١٢٣٤٥") == "12345", "خطا در تست تبدیل اعداد عربی"
+    print("[+] تست تبدیل ساختار یونیکد اعداد: تایید شد.")
+
+    # تست الگوریتم تفکیک پلاک
+    raw_tag = "\\u06f1\\u06f2\\u0639\\u06f3\\u06f4\\u06f5 \\u0627\\u064a\\u0631\\u0627\\u0646 \\u06f9\\u06f9"
+    n1, l, n2 = split_car_tag(raw_tag)
+    
+    n1_clean = int(convert_numbers(n1)) if n1 else None
+    n2_clean = int(convert_numbers(n2)) if n2 else None
+
+    assert n1_clean == 12, f"خطا در تفکیک بخش اول پلاک: خروجی {n1_clean}"
+    assert n2_clean == 345, f"خطا در تفکیک بخش دوم پلاک: خروجی {n2_clean}"
+    print("[+] تست الگوریتم و توابع تجزیه پلاک خودرو: تایید شد.")
+
+    try:
+        engine = get_engine()
+        Base.metadata.create_all(engine)
+        Session = sessionmaker(bind=engine)
+        session = Session()
+        
+        test_record = Paybaar(
+            bol_number="TEST_SELF_TEST_RECORD",
+            bol_serial_number="999999",
+            bol_date="1402/12/29",
+            bol_time="12:00",
+            bol_weight=1000,
+            commodity="تست یکپارچگی",
+            package_type="تست"
+        )
+        session.add(test_record)
+        session.flush()
+        
+        fetched = session.query(Paybaar).filter_by(bol_number="TEST_SELF_TEST_RECORD").first()
+        assert fetched is not None, "رکورد تستی موقت در پایگاه داده ایجاد نشد."
+        
+        session.rollback()
+        print("[+] تست صحت اتصال پایگاه داده و ذخیره‌سازی موقت تراکنش: تایید شد.")
+        print("🟢 تست‌های صحت عملکرد تماماً با موفقیت سپری شدند.")
+        return True, "تمامی تست‌های تطابق الگوریتم و صحت اتصال پایگاه داده موفقیت‌آمیز بودند."
+    except Exception as e:
+        logger.error(f"Self-Test integration failed: {e}")
+        print(f"🔴 خطا در تست یکپارچگی سیستم: {e}")
+        return False, f"خطا در یکپارچگی سیستم:\n{str(e)}"
+
+
+# --- ساخت Tray Icon بدون نیاز به Pillow ---
 
 class SystemTrayIcon:
     def __init__(self, title, on_settings, on_exit):
@@ -478,44 +536,64 @@ class SystemTrayIcon:
         win32gui.PumpMessages()
 
 
-# --- کلاینت گرافیکی نهایی با پیاده‌سازی سیستم رفرش زنده اطلاعات ---
+# --- کلاینت گرافیکی نهایی با مانیتورینگ زنده و چیدمان استاندارد RTL ---
 
 class SettingsApp:
     def __init__(self, root):
         self.root = root
         self.root.title("مدیریت و پیکربندی سیستم واکشی داده پایبار")
-        self.root.geometry("550x570")
+        self.root.geometry("650x580")  # عریض‌تر شدن پنجره جهت برطرف کردن به‌هم‌ریختگی لایوت
         self.root.resizable(False, False)
         self.root.attributes("-topmost", True)
         self.bg_color = "#f8fafc"
         self.root.configure(bg=self.bg_color)
         
+        # انتخاب فونت بومی سیستم‌عامل براساس اولویت درخواستی کاربر
+        self.font_family = self.select_font_family()
+        self.font_normal = (self.font_family, 10, "normal")
+        self.font_bold = (self.font_family, 10, "bold")
+        self.font_header = (self.font_family, 11, "bold")
+
         self.config = load_config()
         self.create_widgets()
         
-        # راه‌اندازی سیستم مانیتورینگ آنلاین زنده ۲ ثانیه‌ای در پنل گرافیکی
+        # پایش آنلاین زنده وضعیت‌ها
         self.refresh_live_status()
+
+    def select_font_family(self):
+        """انتخاب هوشمند فونت بر اساس اولویت: ۱. کالیبری ۲. بی‌نازنین ۳. تاهما"""
+        available = tkfont.families()
+        for f in ["Calibri", "B Nazanin", "Tahoma"]:
+            if f in available:
+                return f
+        return "Arial"
 
     def create_widgets(self):
         style = ttk.Style()
         style.theme_use('vista')
         
-        main_frame = tk.Frame(self.root, bg=self.bg_color, padx=20, pady=15)
+        # پدینگ سراسری
+        main_frame = tk.Frame(self.root, bg=self.bg_color, padx=25, pady=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # ستون‌بندی دقیق جهت توزیع وزن المان‌ها (جلوگیری از به‌هم‌ریختگی کلمات فارسی)
+        main_frame.columnconfigure(0, weight=1)  # فیلدهای ورودی کل عرض باقیمانده را می‌پذیرند
+        main_frame.columnconfigure(1, weight=0)  # ستون برچسب‌ها با اندازه ثابت فیکس می‌شود
+
         # پنل نمایش زنده مانیتورینگ سرویس‌ها در بالای پنجره
-        status_frame = tk.LabelFrame(main_frame, text=" وضعیت سیستم مانیتورینگ زنده (Live) ", font=("Tahoma", 8, "bold"), bg=self.bg_color, fg="#1e293b", padx=10, pady=5)
-        status_frame.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 15))
+        status_frame = tk.LabelFrame(main_frame, text=" وضعیت سیستم مانیتورینگ زنده (Live) ", font=self.font_header, bg=self.bg_color, fg="#1e293b", padx=15, pady=10)
+        status_frame.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0, 20))
+        status_frame.columnconfigure(0, weight=1)
+        status_frame.columnconfigure(1, weight=1)
 
-        tk.Label(status_frame, text="وضعیت دیتابیس محلی:", font=("Tahoma", 9), bg=self.bg_color, fg="#475569").grid(row=0, column=3, sticky="e", padx=(10, 5))
-        self.lbl_db_status = tk.Label(status_frame, text="درحال پایش...", font=("Tahoma", 9, "bold"), bg=self.bg_color, fg="#0284c7")
-        self.lbl_db_status.grid(row=0, column=2, sticky="w", padx=(5, 20))
+        # ردیف نمایش وضعیت دیتابیس و ویندوز سرویس
+        self.lbl_db_status = tk.Label(status_frame, text="دیتابیس محلی: درحال پایش...", font=self.font_bold, bg=self.bg_color, fg="#0284c7")
+        self.lbl_db_status.grid(row=0, column=1, sticky="e", padx=(10, 20))
 
-        tk.Label(status_frame, text="وضعیت سرویس ویندوز:", font=("Tahoma", 9), bg=self.bg_color, fg="#475569").grid(row=0, column=1, sticky="e", padx=(20, 5))
-        self.lbl_service_status = tk.Label(status_frame, text="درحال پایش...", font=("Tahoma", 9, "bold"), bg=self.bg_color, fg="#0284c7")
-        self.lbl_service_status.grid(row=0, column=0, sticky="w", padx=(5, 10))
+        self.lbl_service_status = tk.Label(status_frame, text="وضعیت سرویس ویندوز: درحال پایش...", font=self.font_bold, bg=self.bg_color, fg="#0284c7")
+        self.lbl_service_status.grid(row=0, column=0, sticky="w", padx=(20, 10))
 
-        # ایجاد فیلدهای تنظیمات برنامه
+        # ساخت فیلدهای پیکربندی
         fields = [
             ("آدرس سرور دیتابیس (Host):", "db_host", False),
             ("نام دیتابیس (Database Name):", "db_name", False),
@@ -528,13 +606,15 @@ class SettingsApp:
 
         self.entries = {}
         for idx, (label_text, key, is_password) in enumerate(fields):
-            lbl = tk.Label(main_frame, text=label_text, font=("Tahoma", 9), bg=self.bg_color, fg="#334155")
-            lbl.grid(row=idx+1, column=1, sticky="e", pady=4, padx=(10, 0))
+            # تراز کردن راست‌چین برچسب‌ها به صورت کامل با پدینگ ایمن
+            lbl = tk.Label(main_frame, text=label_text, font=self.font_normal, bg=self.bg_color, fg="#334155", anchor="e", justify="right")
+            lbl.grid(row=idx+1, column=1, sticky="e", pady=6, padx=(10, 0))
             
             show_char = "*" if is_password else ""
-            entry = ttk.Entry(main_frame, width=35, show=show_char, font=("Consolas", 9))
-            entry.grid(row=idx+1, column=0, sticky="w", pady=4)
+            entry = ttk.Entry(main_frame, show=show_char, font=("Consolas", 9))
+            entry.grid(row=idx+1, column=0, sticky="ew", pady=6)
             
+            # قرار دادن خودکار تنظیمات لود شده (تضمین غیر خالی بودن فیلدها با Fallback)
             if not is_password:
                 entry.insert(0, self.config.get(key, ""))
             else:
@@ -543,32 +623,33 @@ class SettingsApp:
             self.entries[key] = entry
 
         # پانل دکمه‌ها و مدیریت عملیاتی سرویس‌ها
-        operations_frame = tk.LabelFrame(main_frame, text="عملیات تخصصی و کنترل سرویس", font=("Tahoma", 8, "bold"), bg=self.bg_color, fg="#475569", padx=10, pady=10)
-        operations_frame.grid(row=len(fields)+2, column=0, columnspan=2, sticky="we", pady=(15, 10))
+        operations_frame = tk.LabelFrame(main_frame, text=" عملیات تخصصی و کنترل ویندوز سرویس ", font=self.font_header, bg=self.bg_color, fg="#475569", padx=15, pady=15)
+        operations_frame.grid(row=len(fields)+1, column=0, columnspan=2, sticky="we", pady=(20, 15))
+        operations_frame.columnconfigure(0, weight=1)
+        operations_frame.columnconfigure(1, weight=1)
+        operations_frame.columnconfigure(2, weight=1)
 
-        test_btn = ttk.Button(operations_frame, text="بررسی زنده صحت عملکرد (Self-Test)", command=self.test_self_logic)
-        test_btn.grid(row=0, column=2, padx=5, pady=2)
+        test_btn = ttk.Button(operations_frame, text="تست زنده عملکرد (Self-Test)", command=self.test_self_logic)
+        test_btn.grid(row=0, column=2, padx=5, pady=5, sticky="ew")
 
-        uninstall_btn = ttk.Button(operations_frame, text="حذف و توقف سرویس ویندوز", command=self.uninstall_service)
-        uninstall_btn.grid(row=0, column=1, padx=5, pady=2)
+        uninstall_btn = ttk.Button(operations_frame, text="حذف سرویس ویندوز", command=self.uninstall_service)
+        uninstall_btn.grid(row=0, column=1, padx=5, pady=5, sticky="ew")
 
-        install_btn = ttk.Button(operations_frame, text="نصب و راه‌اندازی مجدد سرویس", command=self.install_service_manually)
-        install_btn.grid(row=0, column=0, padx=5, pady=2)
+        install_btn = ttk.Button(operations_frame, text="نصب و راه‌اندازی سرویس", command=self.install_service_manually)
+        install_btn.grid(row=0, column=0, padx=5, pady=5, sticky="ew")
 
+        # دکمه نهایی ذخیره تنظیمات در پایین پنل
         save_btn = ttk.Button(main_frame, text="ذخیره‌سازی اطلاعات پیکربندی", command=self.save_settings)
-        save_btn.grid(row=len(fields)+3, column=0, columnspan=2, pady=(10, 0))
+        save_btn.grid(row=len(fields)+2, column=0, columnspan=2, pady=(15, 0), sticky="we")
 
     def refresh_live_status(self):
-        """تابع خودکار آپدیت زنده وضعیت دیتابیس و سرویس در پنل هر ۲ ثانیه یک‌بار"""
-        # آپدیت فیلد وضعیت سرویس ویندوز
+        """به‌روزرسانی خودکار و بلادرنگ وضعیت ارتباط دیتابیس و رجیستری سرویس ویندوز"""
         svc_status = check_service_status()
-        self.lbl_service_status.config(text=svc_status)
+        self.lbl_service_status.config(text=f"وضعیت سرویس ویندوز: {svc_status}")
         
-        # آپدیت فیلد وضعیت دیتابیس محلی
         db_status = "متصل 🟢" if db_connected else "قطع 🔴"
-        self.lbl_db_status.config(text=db_status)
+        self.lbl_db_status.config(text=f"دیتابیس محلی: {db_status}")
         
-        # زمان‌بندی تکرار فرآیند دو ثانیه بعد
         self.root.after(2000, self.refresh_live_status)
 
     def test_self_logic(self):
@@ -579,23 +660,26 @@ class SettingsApp:
             messagebox.showerror("خطا در سیستم تست", message, parent=self.root)
 
     def uninstall_service(self):
-        confirm = messagebox.askyesno("تایید حذف", "آیا مطمئن هستید که می‌خواهید کل سرویس واکشی پایبار را حذف کنید؟", parent=self.root)
+        confirm = messagebox.askyesno("تایید حذف سرویس", "آیا مطمئن هستید که می‌خواهید سرویس توزین پایبار را متوقف و کاملاً حذف کنید؟", parent=self.root)
         if confirm:
-            try:
-                script_path = os.path.abspath(sys.argv[0])
-                subprocess.run(f'"{script_path}" remove', shell=True, check=True)
-                messagebox.showinfo("عملیات موفق", "سرویس واکشی پایبار با موفقیت متوقف و حذف گردید.", parent=self.root)
-            except Exception as e:
-                messagebox.showerror("خطا", f"خطا در حذف سرویس:\n{str(e)}", parent=self.root)
+            success, msg = uninstall_service_programmatic()
+            if success:
+                messagebox.showinfo("عملیات موفق", msg, parent=self.root)
+            else:
+                messagebox.showerror("خطا", msg, parent=self.root)
 
     def install_service_manually(self):
-        try:
-            script_path = os.path.abspath(sys.argv[0])
-            subprocess.run(f'"{script_path}" install', shell=True, check=True)
-            subprocess.run(f'"{script_path}" start', shell=True, check=True)
-            messagebox.showinfo("موفقیت‌آمیز", "سرویس با موفقیت مجدداً نصب و راه‌اندازی شد.", parent=self.root)
-        except Exception as e:
-            messagebox.showerror("خطا", f"خطا در نصب دستی سرویس:\n{str(e)}", parent=self.root)
+        # گام اول: ثبت برنامه‌نویسی شده سرویس
+        success, msg = install_service_programmatic()
+        if success:
+            # گام دوم: راه‌اندازی سرویس ثبت‌شده
+            start_success, start_msg = start_service_programmatic()
+            if start_success:
+                messagebox.showinfo("موفقیت‌آمیز", "سرویس ویندوز با موفقیت نصب و فعال گردید.", parent=self.root)
+            else:
+                messagebox.showwarning("هشدار", f"سرویس نصب شد اما خودکار استارت نخورد:\n{start_msg}", parent=self.root)
+        else:
+            messagebox.showerror("خطا در فرآیند نصب", msg, parent=self.root)
 
     def save_settings(self):
         conf = load_config()
@@ -608,25 +692,22 @@ class SettingsApp:
                 new_config[key] = val
                 
         save_config(new_config)
-        messagebox.showinfo("پیام", "تنظیمات جدید ذخیره شد.", parent=self.root)
+        messagebox.showinfo("ذخیره موفق", "تنظیمات جدید بر روی هارد دیسک ذخیره شد.", parent=self.root)
         self.root.destroy()
 
 
 # --- پیشگیری از اجرای چندگانه (Single Instance Mutex) ---
 
 def prevent_multiple_instances():
-    """ایجاد سیستم سراسری سیستم‌عامل برای جلوگیری از اجرای چندگانه رابط کاربری به صورت همزمان"""
     global mutex
-    # تخصیص کلید انحصاری در قالب یک گلوبال آبجکت در رجیستری ویندوز
     mutex = ctypes.windll.kernel32.CreateMutexW(None, True, "Global\\PaybaarWeighbridgeTrayMutex")
     last_error = ctypes.windll.kernel32.GetLastError()
     if last_error == 183:  # ERROR_ALREADY_EXISTS
-        # در صورتی که تسک از قبل باز باشد برنامه جدید فورا به صورت خاموش بسته خواهد شد
-        ctypes.windll.user32.MessageBoxW(0, "کلاینت مدیریتی پایبار در حال حاضر در حال اجرا است.", "هشدار امنیتی", 0x40 | 0x40000)
+        ctypes.windll.user32.MessageBoxW(0, "برنامه مانیتورینگ پایبار در حال حاضر در حال اجرا است.", "هشدار امنیتی", 0x40 | 0x40000)
         sys.exit(0)
 
 
-# --- بخش اصلی مدیریت فرآیندها و استقرار خودکار برنامه ---
+# --- بخش اصلی مدیریت اجرای فرآیندها ---
 
 def check_admin():
     try:
@@ -635,11 +716,9 @@ def check_admin():
         return False
 
 def run_gui_app():
-    # فعال‌سازی سیستم بررسی تکراری نبودن برنامه فعال در حافظه موقت سیستم
     prevent_multiple_instances()
     init_db()
     
-    # واچینگ ترِد دیتابیس به منظور مانیتور زنده وضعیت شبکه
     def connection_watcher():
         global db_connected
         while True:
@@ -667,8 +746,18 @@ def run_gui_app():
 
 
 if __name__ == '__main__':
+    # مدیریت آرگومان فعال شدن به صورت ویندوز سرویس
+    if '--run-as-service' in sys.argv:
+        try:
+            # آماده‌سازی دیسپچر سرویس بدون باز شدن رابط گرافیکی
+            servicemanager.Initialize()
+            servicemanager.PrepareToHostSingle(PaybaarFetchService)
+            servicemanager.StartServiceCtrlDispatcher()
+        except Exception as e:
+            logger.critical(f"Failed to start service dispatcher loop: {e}")
+        sys.exit(0)
+
     parser = argparse.ArgumentParser(description="ابزار همگام‌سازی و مدیریت هوشمند تراکنش‌های پایبار کلاینت")
-    parser.add_argument('service_cmd', nargs='?', choices=['install', 'start', 'stop', 'restart', 'remove', 'update'], help="دستورات مربوط به مدیریت سرویس ویندوز")
     parser.add_argument('--run-test', action='store_true', help="اجرای تست‌های خودکار یکپارچگی سیستم و خروج")
     parser.add_argument('--db-host', type=str, help="تنظیم و تغییر آدرس هاست دیتابیس")
     parser.add_argument('--db-name', type=str, help="تنظیم مجدد نام پایگاه داده محلی")
@@ -680,7 +769,7 @@ if __name__ == '__main__':
 
     args, service_args = parser.parse_known_args()
 
-    # آپدیت پویای فیلدها از طریق ورودی‌های خط فرمان در کلاینت خاموش
+    # اعمال سریع آپدیت‌ها در پارامترهای خط فرمان
     changed_keys = {}
     for key in ["db_host", "db_name", "db_user", "db_pass", "api_auth", "mysqldump_path", "backup_dir"]:
         cli_val = getattr(args, key)
@@ -697,31 +786,25 @@ if __name__ == '__main__':
         success, _ = run_self_test()
         sys.exit(0 if success else 1)
 
-    if args.service_cmd:
-        if not check_admin():
-            print("[!] جهت ثبت یا تغییر سرویس، دسترسی Administrator سیستم مورد نیاز است.")
-            sys.exit(1)
-        sys.argv = [sys.argv[0]] + service_args if service_args else [sys.argv[0]]
-        sys.argv.append(args.service_cmd)
-        win32serviceutil.HandleCommandLine(PaybaarFetchService)
+    # در صورت دابل کلیک یا اجرای مستقیم
+    if not check_admin():
+        script_path = os.path.abspath(sys.argv[0])
+        ctypes.windll.shell32.ShellExecuteW(None, "runas", script_path, " ".join(sys.argv[1:]), None, 1)
+        sys.exit(0)
     else:
-        if not check_admin():
-            script_path = os.path.abspath(sys.argv[0])
-            ctypes.windll.shell32.ShellExecuteW(None, "runas", script_path, " ".join(sys.argv[1:]), None, 1)
-            sys.exit(0)
-        else:
-            service_name = PaybaarFetchService._svc_name_
+        # بررسی وضعیت سرویس در استارت اولیه (استقرار خودکار در سیستم مقصد)
+        try:
+            scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
             try:
-                scm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
-                try:
-                    win32service.OpenService(scm, service_name, win32service.SERVICE_QUERY_STATUS)
-                except Exception:
-                    # نصب و راه‌اندازی اتوماتیک بدون نیاز به کدهای دستکاری خارجی روی ویندوز سیستم هدف
-                    print("[*] سرویس پایبار پیدا نشد. اقدام به نصب و راه‌اندازی خودکار...")
-                    logger.info("Automatically installing PaybaarFetchService...")
-                    subprocess.run(f'"{sys.argv[0]}" install', shell=True, check=True)
-                    subprocess.run(f'"{sys.argv[0]}" start', shell=True, check=True)
-            except Exception as e:
-                logger.error(f"Auto install sequence exception: {e}")
-                
-            run_gui_app()
+                win32service.OpenService(scm, "PaybaarFetchService", win32service.SERVICE_QUERY_STATUS)
+            except Exception:
+                # اگر سرویس هنوز در سیستم مقصد نصب نشده باشد، خودکار ثبت و استارت می‌شود
+                logger.info("Service 'PaybaarFetchService' not found. Automatically installing...")
+                install_success, _ = install_service_programmatic()
+                if install_success:
+                    start_service_programmatic()
+            win32service.CloseServiceHandle(scm)
+        except Exception as e:
+            logger.error(f"Error checking/auto-installing service: {e}")
+            
+        run_gui_app()
