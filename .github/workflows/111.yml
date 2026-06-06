@@ -4,17 +4,17 @@ on:
   workflow_dispatch:
     inputs:
       entrypoint:
-        description: "آدرس فایل پایتون هدف برای کامپایل (مثال: paybaar.py)"
+        description: "آدرس فایل پایتون هدف برای کامپایل"
         required: true
-        default: "paybaar.py"
+        default: "paybaar_v8.py"
       packages:
         description: "لیست کتابخانه‌های پایتون جهت نصب (با فاصله جدا کنید)"
         required: true
-        default: "sqlalchemy mysql-connector-python requests apscheduler pywin32 nuitka"
+        default: "sqlalchemy pymysql requests apscheduler pywin32 nuitka"
       nuitka_flags:
         description: "فلگ‌های کامپایل Nuitka"
         required: true
-        default: "--standalone --onefile --windows-console-mode=disable --enable-plugins=tk-inter --assume-yes-for-downloads --output-filename=paybaar"
+        default: "--standalone --onefile --windows-console-mode=disable --enable-plugin=tk-inter --enable-plugin=sqlalchemy --include-package=pymysql --assume-yes-for-downloads --output-filename=paybaar_v8"
 
 jobs:
   build:
@@ -32,7 +32,7 @@ jobs:
         id: tag_gen
         run: |
           $date_str = Get-Date -Format "yyyy.MM.dd-HHmmss"
-          echo "TAG_NAME=v-$date_str" >> $env:GITHUB_ENV
+          echo "TAG_NAME=v8-$date_str" >> $env:GITHUB_ENV
         shell: powershell
 
       # ۲. راه‌اندازی ابزار فوق‌سریع uv همراه با مدیریت خودکار پایتون ۳.۱۲ و کش پکیج‌ها
@@ -48,9 +48,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .nuitka-cache
-          key: ${{ runner.os }}-nuitka-v1-${{ hashFiles('**/paybaar.py') }}
+          key: ${{ runner.os }}-nuitka-v8-${{ hashFiles('**/*.py') }}
           restore-keys: |
-            ${{ runner.os }}-nuitka-v1-
+            ${{ runner.os }}-nuitka-v8-
 
       # ۴. نصب پکیج‌ها به صورت پویا بر اساس ورودی کاربر
       - name: Install Dependencies
@@ -81,7 +81,7 @@ jobs:
       - name: Save Build as Artifact (Safety Net)
         uses: actions/upload-artifact@v4
         with:
-          name: compiled-app-build-${{ env.TAG_NAME }}
+          name: paybaar-v8-build-${{ env.TAG_NAME }}
           path: "*.exe"
           retention-days: 90
 
@@ -94,7 +94,7 @@ jobs:
           
           if ($exeFile) {
               echo "Found executable: $($exeFile.Name). Creating release..."
-              gh release create "${{ env.TAG_NAME }}" $exeFile.FullName --title "Release ${{ env.TAG_NAME }}" --notes "این نسخه به صورت خودکار کامپایل شده است."
+              gh release create "${{ env.TAG_NAME }}" $exeFile.FullName --title "Paybaar Enterprise Release ${{ env.TAG_NAME }}" --notes "نسخه ۸ - کامپایل شده به صورت خودکار با معماری Enterprise و رفع تداخل سرویس‌های ویندوز."
           } else {
               echo "Error: No executable file (*.exe) was found to release."
               exit 1
