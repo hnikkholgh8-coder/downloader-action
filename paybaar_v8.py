@@ -1,0 +1,81 @@
+permissions:
+  contents: write
+
+steps:
+  - name: Checkout Code
+    uses: actions/checkout@v4
+
+  # ۱. تولید تگ کاملاً داینامیک بر اساس تاریخ و ساعت ساخت
+  - name: Generate Timestamp Tag
+    id: tag_gen
+    run: |
+      $date_str = Get-Date -Format "yyyy.MM.dd-HHmmss"
+      echo "TAG_NAME=v-$date_str" >> $env:GITHUB_ENV
+    shell: powershell
+
+  # ۲. راه‌اندازی ابزار فوق‌سریع uv همراه با مدیریت خودکار پایتون ۳.۱۲ و کش پکیج‌ها
+  - name: Set up uv
+    uses: astral-sh/setup-uv@v5
+    with:
+      version: "latest"
+      enable-cache: true
+      python-version: "3.12"
+
+  # ۳. کش کردن پیشرفته دایرکتوری کامپایل نویتکا در محیط مشخص ویندوز
+  - name: Cache Nuitka Compiler
+    uses: actions/cache@v4
+    with:
+      path: .nuitka-cache
+      key: ${{ runner.os }}-nuitka-v1-${{ hashFiles('**/paybaar.py') }}
+      restore-keys: |
+        ${{ runner.os }}-nuitka-v1-
+
+  # ۴. نصب پکیج‌ها به صورت پویا بر اساس ورودی کاربر
+  - name: Install Dependencies
+    run: |
+      echo "=== Creating virtual environment with uv ==="
+      uv venv
+      
+      echo "=== Installing packages ==="
+      uv pip install ${{ github.event.inputs.packages }}
+      if (Test-Path requirements.txt) { 
+         uv pip install -r requirements.txt
+      }
+
+  # ۵. کامپایل فشرده با استفاده از فایل و فلگ‌های تعیین شده توسط کاربر به همراه پوشه کش اختصاصی
+  - name: Build with Nuitka
+    run: |
+      echo "=== Starting Nuitka Compilation ==="
+      echo "Target File: ${{ github.event.inputs.entrypoint }}"
+      echo "Nuitka Flags: ${{ github.event.inputs.nuitka_flags }}"
+      
+      # تعریف متغیر محیطی به منظور اجبار نویتکا برای ذخیره‌سازی کش کامپایل در پوشه کش گیت‌هاب
+      $env:NUITKA_CACHE_DIR = "$(Get-Location)\.nuitka-cache"
+      
+      .\.venv\Scripts\python -m nuitka ${{ github.event.inputs.nuitka_flags }} "${{ github.event.inputs.entrypoint }}"
+      echo "Compilation finished."
+
+  # ۶. آرتیفکت گیت‌هاب (سوپاپ اطمینان اول - همیشه فایل در این بخش ذخیره می‌شود)
+  - name: Save Build as Artifact (Safety Net)
+    uses: actions/upload-artifact@v4
+    with:
+      name: compiled-app-build-${{ env.TAG_NAME }}
+      path: "*.exe"
+      retention-days: 90
+
+  # ۷. ساخت ریلیز رسمی با استفاده از ابزار قدرتمند گیت‌هاب کلاینت (gh)
+  - name: Create Release using GitHub CLI
+    continue-on-error: true # سوپاپ اطمینان دوم
+    run: |
+      echo "Searching for compiled executable..."
+      $exeFile = Get-ChildItem -Filter *.exe | Select-Object -First 1
+      
+      if ($exeFile) {
+          echo "Found executable: $($exeFile.Name). Creating release..."
+          gh release create "${{ env.TAG_NAME }}" $exeFile.FullName --title "Release ${{ env.TAG_NAME }}" --notes "این نسخه به صورت خودکار کامپایل شده است."
+      } else {
+          echo "Error: No executable file (*.exe) was found to release."
+          exit 1
+      }
+    env:
+      GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
