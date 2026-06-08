@@ -1,0 +1,139 @@
+name: Linux Standalone Build (GLIBC & MUSL) pyinstaller
+
+on:
+  workflow_dispatch:
+    inputs:
+      entrypoint:
+        description: "آدرس فایل پایتون هدف (مثال: tel.py)"
+        required: true
+        default: "tel.py"
+      packages:
+        description: "لیست کتابخانه‌های پایتون (با فاصله)"
+        required: true
+        default: "nicegui openpyxl python-dotenv"
+
+jobs:
+  # ==========================================
+  # 1. کامپایل نسخه GLIBC (برای Ubuntu, Debian, Fedora)
+  # ==========================================
+  build-glibc:
+    name: Build GLIBC (Ubuntu)
+    runs-on: ubuntu-20.04
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up uv & Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Install PyInstaller and Packages
+        run: |
+          uv venv
+          uv pip install pyinstaller ${{ github.event.inputs.packages }}
+          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+
+      - name: Build with PyInstaller (GLIBC)
+        run: |
+          source .venv/bin/activate
+          # استخراج خودکار مسیر نصب دارایی‌های NiceGUI برای الحاق به باینری
+          NICEGUI_PATH=$(python -c "import nicegui, os; print(os.path.dirname(nicegui.__file__))")
+          pyinstaller --onefile --clean --add-data "$NICEGUI_PATH:nicegui" --name phonebook-glibc "${{ github.event.inputs.entrypoint }}"
+
+      - name: Upload GLIBC Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-glibc
+          path: dist/phonebook-glibc
+          retention-days: 90
+
+  # ==========================================
+  # 2. کامپایل نسخه MUSL (برای Alpine Linux و کانتینرها)
+  # ==========================================
+  build-musl:
+    name: Build MUSL (Alpine via Docker)
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Standalone Binary inside Alpine Docker
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace python:3.12-alpine sh -c "
+            # ۱. نصب ابزارهای ساخت پایه مخصوص آلپاین (جهت تطبیق لایه پایینی بوت‌لودر با معماری MUSL)
+            apk update
+            apk add --no-cache build-base zlib-dev git
+            
+            # ۲. ساخت محیط مجازی و ارتقاء ابزارها
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip uv
+            
+            # ۳. نصب PyInstaller و پکیج‌های پروژه
+            uv pip install pyinstaller ${{ github.event.inputs.packages }}
+            if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+            
+            # ۴. آدرس‌دهی فریم‌ورک و بسته‌بندی نهایی
+            NICEGUI_PATH=\$(python -c 'import nicegui, os; print(os.path.dirname(nicegui.__file__))')
+            pyinstaller --onefile --clean --add-data \"\$NICEGUI_PATH:nicegui\" --name phonebook-musl \"${{ github.event.inputs.entrypoint }}\"
+          "
+
+      - name: Upload MUSL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-musl
+          path: dist/phonebook-musl
+          retention-days: 90
+
+  # ==========================================
+  # 3. ایجاد ریلیز در گیت‌هاب
+  # ==========================================
+  release:
+    name: Create GitHub Release
+    needs: [build-glibc, build-musl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          DATE_STR=$(date +"%Y.%m.%d-%H%M%S")
+          echo "TAG_NAME=v-$DATE_STR" >> $GITHUB_ENV
+
+      - name: Download GLIBC Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-glibc
+          path: release_files/
+
+      - name: Download MUSL Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-musl
+          path: release_files/
+
+      - name: Set Execute Permissions
+        run: chmod +x release_files/*
+
+      - name: Create Release using GitHub CLI
+        continue-on-error: true
+        run: |
+          cd release_files
+          gh release create "${{ env.TAG_NAME }}" phonebook-glibc phonebook-musl \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "نسخه آماده اجرای دفترچه تلفن شرکت اکسیرپویان (ساخته شده با PyInstaller).
+            
+            🐧 **phonebook-glibc**: نسخه کامپایل شده بر پایه GLIBC (مناسب توزیع‌های لینوکس نظیر اوبونتو، دبیان و فدورا)
+            🏔️ **phonebook-musl**: نسخه کامپایل شده بر پایه MUSL (مناسب Alpine Linux و کانتینرها)"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
