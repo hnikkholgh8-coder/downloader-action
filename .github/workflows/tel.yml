@@ -1,0 +1,153 @@
+name: Linux Standalone Build (GLIBC & MUSL)
+
+on:
+  workflow_dispatch:
+    inputs:
+      entrypoint:
+        description: "آدرس فایل پایتون هدف (مثال: tel.py)"
+        required: true
+        default: "tel.py"
+      packages:
+        description: "لیست کتابخانه‌های پایتون (با فاصله)"
+        required: true
+        default: "nicegui openpyxl python-dotenv"
+      nuitka_flags:
+        description: "فلگ‌های کامپایل Nuitka (برای NiceGUI تغییر ندهید)"
+        required: true
+        # فلگ‌های حیاتی برای اجرای بدون نقص NiceGUI و SQLite در لینوکس
+        default: "--standalone --onefile --include-package-data=nicegui --include-package=uvicorn --include-package=starlette --assume-yes-for-downloads"
+
+jobs:
+  # ==========================================
+  # 1. کامپایل نسخه GLIBC (برای Ubuntu, Debian, Fedora, CentOS)
+  # ==========================================
+  build-glibc:
+    name: Build GLIBC (Ubuntu)
+    runs-on: ubuntu-20.04 # استفاده از نسخه قدیمی‌تر برای سازگاری بیشتر (Forward Compatibility)
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies for Nuitka
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache gcc python3-dev
+
+      - name: Set up uv & Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Nuitka
+          key: ${{ runner.os }}-glibc-nuitka-${{ hashFiles('**/*.py') }}
+          restore-keys: |
+            ${{ runner.os }}-glibc-nuitka-
+
+      - name: Install Python Packages
+        run: |
+          uv venv
+          uv pip install nuitka ${{ github.event.inputs.packages }}
+          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+
+      - name: Build with Nuitka (GLIBC)
+        run: |
+          source .venv/bin/activate
+          python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-glibc "${{ github.event.inputs.entrypoint }}"
+
+      - name: Upload GLIBC Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-glibc
+          path: phonebook-glibc*
+          retention-days: 90
+
+  # ==========================================
+  # 2. کامپایل نسخه MUSL (برای Alpine Linux و سیستم‌های توکار)
+  # ==========================================
+  build-musl:
+    name: Build MUSL (Alpine)
+    runs-on: ubuntu-latest
+    container: python:3.12-alpine # اجرای مستقیم داخل کانتینر آلپاین
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install Alpine Build Tools
+        run: |
+          apk update
+          apk add --no-cache build-base patchelf ccache linux-headers gcc musl-dev
+
+      - name: Install uv and Packages
+        run: |
+          pip install uv
+          uv venv
+          source .venv/bin/activate
+          uv pip install nuitka ${{ github.event.inputs.packages }}
+          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+
+      - name: Build with Nuitka (MUSL)
+        run: |
+          source .venv/bin/activate
+          python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-musl "${{ github.event.inputs.entrypoint }}"
+
+      - name: Upload MUSL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-musl
+          path: phonebook-musl*
+          retention-days: 90
+
+  # ==========================================
+  # 3. ایجاد ریلیز در گیت‌هاب (جمع‌آوری هر دو باینری)
+  # ==========================================
+  release:
+    name: Create GitHub Release
+    needs: [build-glibc, build-musl] # منتظر می‌ماند تا هر دو بیلد تمام شوند
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          DATE_STR=$(date +"%Y.%m.%d-%H%M%S")
+          echo "TAG_NAME=v-$DATE_STR" >> $GITHUB_ENV
+
+      - name: Download GLIBC Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-glibc
+          path: release_files/
+
+      - name: Download MUSL Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-musl
+          path: release_files/
+
+      - name: Set Execute Permissions
+        run: chmod +x release_files/*
+
+      - name: Create Release using GitHub CLI
+        continue-on-error: true # سوپاپ اطمینان: اگر قوانین مانع شد، اکشن قرمز نشود
+        run: |
+          cd release_files
+          gh release create "${{ env.TAG_NAME }}" phonebook-glibc* phonebook-musl* \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "کامپایل خودکار نرم‌افزار دفترچه تلفن اکسیرپویان. 
+            
+            🐧 **phonebook-glibc**: مناسب برای اوبونتو، دبیان، فدورا (اکثر سرورها)
+            🏔️ **phonebook-musl**: مناسب برای Alpine Linux و داکر"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
