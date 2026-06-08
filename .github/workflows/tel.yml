@@ -12,9 +12,9 @@ on:
         required: true
         default: "nicegui openpyxl python-dotenv"
       nuitka_flags:
-        description: "فلگ‌های کامپایل Nuitka (برای NiceGUI تغییر ندهید)"
+        description: "فلگ‌های کامپایل Nuitka"
         required: true
-        # فلگ‌های حیاتی برای اجرای بدون نقص NiceGUI و SQLite در لینوکس
+        # فلگ‌های بهینه‌شده برای پکیج کردن بدون نقص دارایی‌های NiceGUI و وب‌سرور Uvicorn
         default: "--standalone --onefile --include-package-data=nicegui --include-package=uvicorn --include-package=starlette --assume-yes-for-downloads"
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
   # ==========================================
   build-glibc:
     name: Build GLIBC (Ubuntu)
-    runs-on: ubuntu-20.04 # استفاده از نسخه قدیمی‌تر برای سازگاری بیشتر (Forward Compatibility)
+    runs-on: ubuntu-20.04 # استفاده از 20.04 برای سازگاری عقب‌رو با نسخه‌های قدیمی‌تر سیستم‌عامل‌ها
     
     steps:
       - name: Checkout Code
@@ -64,44 +64,57 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: binary-glibc
-          path: phonebook-glibc*
+          path: phonebook-glibc
           retention-days: 90
 
   # ==========================================
-  # 2. کامپایل نسخه MUSL (برای Alpine Linux و سیستم‌های توکار)
+  # 2. کامپایل نسخه MUSL (برای Alpine Linux و کانتینرها)
   # ==========================================
   build-musl:
-    name: Build MUSL (Alpine)
-    runs-on: ubuntu-latest
-    container: python:3.12-alpine # اجرای مستقیم داخل کانتینر آلپاین
-
+    name: Build MUSL (Alpine via Docker)
+    runs-on: ubuntu-latest # استفاده از سرور اوبونتو برای پایداری و اجرای کامپایل در داکر آلپاین
+    
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Install Alpine Build Tools
+      - name: Build Standalone Binary inside Alpine Docker
         run: |
-          apk update
-          apk add --no-cache build-base patchelf ccache linux-headers gcc musl-dev
-
-      - name: Install uv and Packages
-        run: |
-          pip install uv
-          uv venv
-          source .venv/bin/activate
-          uv pip install nuitka ${{ github.event.inputs.packages }}
-          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
-
-      - name: Build with Nuitka (MUSL)
-        run: |
-          source .venv/bin/activate
-          python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-musl "${{ github.event.inputs.entrypoint }}"
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace python:3.12-alpine sh -c "
+            # ۱. نصب پیش‌نیازهای اولیه سیستم
+            apk update
+            apk add --no-cache build-base ccache linux-headers gcc musl-dev git autoconf automake libtool
+            
+            # ۲. دانلود و کامپایل بیلد پایدار Patchelf 0.17.2 برای عبور از سد باگ نسخه 0.18.0 آلپاین
+            git clone --depth 1 --branch 0.17.2 https://github.com/NixOS/patchelf.git
+            cd patchelf
+            ./bootstrap.sh
+            ./configure
+            make
+            make install
+            cd ..
+            rm -rf patchelf
+            
+            # ۳. تایید صحت نصب نسخه پایدار پچ‌الف
+            echo 'Installed Patchelf Version:' && patchelf --version
+            
+            # ۴. راه‌اندازی محیط مجازی پایتون و استفاده از uv جهت سرعت حداکثری نصب پکیج‌ها
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip
+            pip install uv
+            uv pip install nuitka ${{ github.event.inputs.packages }}
+            if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+            
+            # ۵. اجرای پروسه کامپایل تک‌فایلی با Nuitka
+            python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-musl \"${{ github.event.inputs.entrypoint }}\"
+          "
 
       - name: Upload MUSL Artifact
         uses: actions/upload-artifact@v4
         with:
           name: binary-musl
-          path: phonebook-musl*
+          path: phonebook-musl
           retention-days: 90
 
   # ==========================================
@@ -109,7 +122,7 @@ jobs:
   # ==========================================
   release:
     name: Create GitHub Release
-    needs: [build-glibc, build-musl] # منتظر می‌ماند تا هر دو بیلد تمام شوند
+    needs: [build-glibc, build-musl]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -140,14 +153,14 @@ jobs:
         run: chmod +x release_files/*
 
       - name: Create Release using GitHub CLI
-        continue-on-error: true # سوپاپ اطمینان: اگر قوانین مانع شد، اکشن قرمز نشود
+        continue-on-error: true
         run: |
           cd release_files
-          gh release create "${{ env.TAG_NAME }}" phonebook-glibc* phonebook-musl* \
+          gh release create "${{ env.TAG_NAME }}" phonebook-glibc phonebook-musl \
             --title "Release ${{ env.TAG_NAME }}" \
-            --notes "کامپایل خودکار نرم‌افزار دفترچه تلفن اکسیرپویان. 
+            --notes "نسخه آماده اجرای دفترچه تلفن شرکت اکسیرپویان.
             
-            🐧 **phonebook-glibc**: مناسب برای اوبونتو، دبیان، فدورا (اکثر سرورها)
-            🏔️ **phonebook-musl**: مناسب برای Alpine Linux و داکر"
+            🐧 **phonebook-glibc**: نسخه کامپایل شده بر پایه GLIBC (مناسب اکثر توزیع‌های لینوکس نظیر Ubuntu, Debian, Centos و غیره)
+            🏔️ **phonebook-musl**: نسخه کامپایل شده بر پایه MUSL (بدون پیش‌نیاز، سبک و پایدار برای محیط‌های آلپاین و کانتینرهای داکر)"
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
