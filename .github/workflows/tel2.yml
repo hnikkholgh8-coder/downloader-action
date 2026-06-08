@@ -1,4 +1,4 @@
-name: Linux Standalone Build (GLIBC & MUSL)
+name: Linux Standalone Build (GLIBC & MUSL)2
 
 on:
   workflow_dispatch:
