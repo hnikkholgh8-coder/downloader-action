@@ -1,0 +1,56 @@
+name: Unbreakable Go
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    name: Build Multi-Linux Binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+
+      - name: Install Go Dependencies
+        run: go mod tidy
+
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          DATE_STR=$(date +"%Y.%m.%d-%H%M%S")
+          echo "TAG_NAME=v-$DATE_STR" >> $GITHUB_ENV
+
+      # ساخت نسخه بومی، بدون نیاز به CGO و سازگار با انواع توزیع‌های لینوکس
+      - name: Build GLIBC Binary (Ubuntu/Debian)
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o phonebook-glibc main.go
+
+      # ساخت نسخه بومی، بدون نیاز به CGO و سازگار با Alpine Linux
+      - name: Build MUSL Binary (Alpine Linux)
+        run: |
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o phonebook-musl main.go
+
+      - name: Create Release using GitHub CLI
+        run: |
+          gh release create "${{ env.TAG_NAME }}" phonebook-glibc phonebook-musl \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "نسخه پایدار، پرسرعت و سبک دفترچه تلفن شرکت اکسیرپویان به زبان Go.
+            
+            🚀 **phonebook-glibc**: مناسب اکثر سیستم‌عامل‌های لینوکس (سرورهای اوبونتو و دبیان)
+            🏔️ **phonebook-musl**: مستقل و سازگار با سیستم‌عامل سبک Alpine Linux و کانتینرها
+            
+            *ویژگی‌ها:*
+            - حجم فوق‌العاده کم (حدود ۱۰ مگابایت)
+            - مصرف رم بسیار ناچیز (کمتر از ۱۵ مگابایت)
+            - بدون نیاز به هیچ‌گونه وابستگی سیستمی خارجی"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
