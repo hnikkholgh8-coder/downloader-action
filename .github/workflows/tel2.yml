@@ -1,0 +1,166 @@
+name: Linux Standalone Build (GLIBC & MUSL)
+
+on:
+  workflow_dispatch:
+    inputs:
+      entrypoint:
+        description: "آدرس فایل پایتون هدف (مثال: tel.py)"
+        required: true
+        default: "tel.py"
+      packages:
+        description: "لیست کتابخانه‌های پایتون (با فاصله)"
+        required: true
+        default: "nicegui openpyxl python-dotenv zstandard"
+      nuitka_flags:
+        description: "فلگ‌های کامپایل Nuitka"
+        required: true
+        # فلگ‌های بهینه‌شده برای پکیج کردن بدون نقص دارایی‌های NiceGUI و وب‌سرور Uvicorn
+        default: "--standalone --onefile --include-package-data=nicegui --include-package=uvicorn --include-package=starlette --assume-yes-for-downloads"
+
+jobs:
+  # ==========================================
+  # 1. کامپایل نسخه GLIBC (برای Ubuntu, Debian, Fedora, CentOS)
+  # ==========================================
+  build-glibc:
+    name: Build GLIBC (Ubuntu)
+    runs-on: ubuntu-20.04 # استفاده از 20.04 برای سازگاری عقب‌رو با نسخه‌های قدیمی‌تر سیستم‌عامل‌ها
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies for Nuitka
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache gcc python3-dev
+
+      - name: Set up uv & Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "latest"
+          enable-cache: true
+          python-version: "3.12"
+
+      - name: Cache Nuitka
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/Nuitka
+          key: ${{ runner.os }}-glibc-nuitka-${{ hashFiles('**/*.py') }}
+          restore-keys: |
+            ${{ runner.os }}-glibc-nuitka-
+
+      - name: Install Python Packages
+        run: |
+          uv venv
+          uv pip install nuitka ${{ github.event.inputs.packages }}
+          if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+
+      - name: Build with Nuitka (GLIBC)
+        run: |
+          source .venv/bin/activate
+          python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-glibc "${{ github.event.inputs.entrypoint }}"
+
+      - name: Upload GLIBC Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-glibc
+          path: phonebook-glibc
+          retention-days: 90
+
+  # ==========================================
+  # 2. کامپایل نسخه MUSL (برای Alpine Linux و کانتینرها)
+  # ==========================================
+  build-musl:
+    name: Build MUSL (Alpine via Docker)
+    runs-on: ubuntu-latest # استفاده از سرور اوبونتو برای پایداری و اجرای کامپایل در داکر آلپاین
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Standalone Binary inside Alpine Docker
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace python:3.12-alpine sh -c "
+            # ۱. نصب پیش‌نیازهای اولیه سیستم
+            apk update
+            apk add --no-cache build-base ccache linux-headers gcc musl-dev git autoconf automake libtool
+            
+            # ۲. دانلود و کامپایل بیلد پایدار Patchelf 0.17.2 برای عبور از سد باگ نسخه 0.18.0 آلپاین
+            git clone --depth 1 --branch 0.17.2 https://github.com/NixOS/patchelf.git
+            cd patchelf
+            ./bootstrap.sh
+            ./configure
+            make
+            make install
+            cd ..
+            rm -rf patchelf
+            
+            # ۳. تایید صحت نصب نسخه پایدار پچ‌الف
+            echo 'Installed Patchelf Version:' && patchelf --version
+            
+            # ۴. راه‌اندازی محیط مجازی پایتون و استفاده از uv جهت سرعت حداکثری نصب پکیج‌ها
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip
+            pip install uv
+            uv pip install nuitka ${{ github.event.inputs.packages }}
+            if [ -f requirements.txt ]; then uv pip install -r requirements.txt; fi
+            
+            # ۵. اجرای پروسه کامپایل تک‌فایلی با Nuitka
+            python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-musl \"${{ github.event.inputs.entrypoint }}\"
+          "
+
+      - name: Upload MUSL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-musl
+          path: phonebook-musl
+          retention-days: 90
+
+  # ==========================================
+  # 3. ایجاد ریلیز در گیت‌هاب (جمع‌آوری هر دو باینری)
+  # ==========================================
+  release:
+    name: Create GitHub Release
+    needs: [build-glibc, build-musl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          DATE_STR=$(date +"%Y.%m.%d-%H%M%S")
+          echo "TAG_NAME=v-$DATE_STR" >> $GITHUB_ENV
+
+      - name: Download GLIBC Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-glibc
+          path: release_files/
+
+      - name: Download MUSL Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binary-musl
+          path: release_files/
+
+      - name: Set Execute Permissions
+        run: chmod +x release_files/*
+
+      - name: Create Release using GitHub CLI
+        continue-on-error: true
+        run: |
+          cd release_files
+          gh release create "${{ env.TAG_NAME }}" phonebook-glibc phonebook-musl \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "نسخه آماده اجرای دفترچه تلفن شرکت اکسیرپویان.
+            
+            🐧 **phonebook-glibc**: نسخه کامپایل شده بر پایه GLIBC (مناسب اکثر توزیع‌های لینوکس نظیر Ubuntu, Debian, Centos و غیره)
+            🏔️ **phonebook-musl**: نسخه کامپایل شده بر پایه MUSL (بدون پیش‌نیاز، سبک و پایدار برای محیط‌های آلپاین و کانتینرهای داکر)"
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT || secrets.GITHUB_TOKEN }}
