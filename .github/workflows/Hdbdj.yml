@@ -1,0 +1,109 @@
+name: Alpine MUSL Standalone Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      entrypoint:
+        description: "آدرس فایل پایتون هدف (مثال: main.py)"
+        required: true
+        default: "main.py"
+      packages:
+        description: "لیست کتابخانه‌های پایتون (با فاصله)"
+        required: true
+        default: "nicegui openpyxl python-dotenv zstandard"
+      nuitka_flags:
+        description: "فلگ‌های کامپایل Nuitka (فقط در صورت نیاز تغییر دهید)"
+        required: true
+        default: "--standalone --onefile --musl --static-libpython --static-libgcc --enable-plugin=no-qt --noinclude-pytest-mode=nofollow --include-package-data=nicegui --include-package=uvicorn --include-package=starlette --assume-yes-for-downloads"
+
+jobs:
+  build-musl:
+    name: Build MUSL (Alpine via Docker)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Standalone Binary inside Alpine Docker
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace python:3.12-alpine sh -c "
+            # نصب پیش‌نیازهای اولیه سیستم
+            apk update
+            apk add --no-cache build-base ccache linux-headers gcc musl-dev git autoconf automake libtool
+            
+            # نصب Patchelf نسخه پایدار 0.17.2 (اجتناب از باگ نسخه 0.18.0)
+            git clone --depth 1 --branch 0.17.2 https://github.com/NixOS/patchelf.git
+            cd patchelf
+            ./bootstrap.sh
+            ./configure
+            make
+            make install
+            cd ..
+            rm -rf patchelf
+            
+            # بررسی صحت نصب
+            echo 'Installed Patchelf Version:' && patchelf --version
+            
+            # راه‌اندازی محیط مجازی و نصب پکیج‌ها
+            python -m venv .venv
+            source .venv/bin/activate
+            pip install --upgrade pip
+            pip install nuitka
+            
+            # نصب کتابخانه‌های اصلی
+            pip install ${{ github.event.inputs.packages }}
+            
+            # نصب dependencies از فایل requirements.txt (در صورت وجود)
+            if [ -f requirements.txt ]; then
+                pip install -r requirements.txt
+            fi
+            
+            # کامپایل نهایی با Nuitka و فلگ‌های از پیش تعیین شده
+            python -m nuitka ${{ github.event.inputs.nuitka_flags }} --output-filename=phonebook-musl \"${{ github.event.inputs.entrypoint }}\"
+          "
+
+      - name: Upload MUSL Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: phonebook-musl
+          path: phonebook-musl
+          retention-days: 90
+
+  release:
+    name: Create GitHub Release
+    needs: [build-musl]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Generate Timestamp Tag
+        id: tag_gen
+        run: |
+          DATE_STR=$(date +"%Y.%m.%d-%H%M%S")
+          echo "TAG_NAME=v-musl-$DATE_STR" >> $GITHUB_ENV
+
+      - name: Download MUSL Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: phonebook-musl
+          path: release_files/
+
+      - name: Set Execute Permissions
+        run: chmod +x release_files/phonebook-musl
+
+      - name: Create Release using GitHub CLI
+        continue-on-error: true
+        run: |
+          cd release_files
+          gh release create "${{ env.TAG_NAME }}" phonebook-musl \
+            --title "Release ${{ env.TAG_NAME }}" \
+            --notes "🎉 نسخه کامپایل شده و آماده به کار برنامه.
+
+🏔️ **phonebook-musl**: این باینری بر پایه MUSL ساخته شده. کاملاً مستقل و بدون نیاز به هیچ پیش‌نیاز سیستمی روی هر توزیعی از لینوکس (حتی آلپاین) اجرا می‌شه."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
